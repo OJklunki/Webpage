@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robot Arm Control</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #0a0e1a;
+    color: #00ffcc;
+    font-family: 'Courier New', monospace;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+    background-image:
+      radial-gradient(ellipse at 20% 50%, rgba(0,255,204,0.05) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% 20%, rgba(0,150,255,0.05) 0%, transparent 60%);
+  }
+
+  h1 {
+    font-size: 1.2em;
+    letter-spacing: 6px;
+    text-transform: uppercase;
+    color: #00ffcc;
+    text-shadow: 0 0 20px rgba(0,255,204,0.5);
+    margin-bottom: 20px;
+    border-bottom: 1px solid rgba(0,255,204,0.2);
+    padding-bottom: 10px;
+    width: 100%;
+    text-align: center;
+  }
+
+  .main {
+    display: flex;
+    gap: 30px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    justify-content: center;
+    width: 100%;
+    max-width: 1000px;
+  }
+
+  #canvas-container {
+    background: rgba(0, 255, 204, 0.185);
+    border: 1px solid rgba(214, 238, 233, 0.15);
+    border-radius: 8px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  #canvas-container canvas {
+    display: block;
+  }
+
+  .drag-hint {
+    position: absolute;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.6em;
+    letter-spacing: 2px;
+    color: rgba(16, 215, 192, 0.847);
+    pointer-events: none;
+    white-space: nowrap;
+  }
+
+  .controls {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    min-width: 320px;
+  }
+
+  .control-card {
+    background: rgba(0,255,204,0.03);
+    border: 1px solid rgba(0,255,204,0.15);
+    border-radius: 8px;
+    padding: 14px 18px;
+    transition: border-color 0.2s;
+  }
+
+  .control-card:hover {
+    border-color: rgba(0,255,204,0.4);
+  }
+
+  .control-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+
+  .control-name {
+    font-size: 0.65em;
+    letter-spacing: 2px;
+    color: #00ffcc;
+  }
+
+  .control-value {
+    font-size: 0.85em;
+    color: #00aaff;
+    min-width: 45px;
+    text-align: right;
+  }
+
+  input[type=range] {
+    -webkit-appearance: none;
+    width: 100%;
+    height: 4px;
+    background: rgba(0,255,204,0.15);
+    border-radius: 2px;
+    outline: none;
+  }
+
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #00ffcc;
+    cursor: pointer;
+    box-shadow: 0 0 8px rgba(0,255,204,0.8);
+  }
+
+  input[type=range]::-webkit-slider-runnable-track {
+    background: linear-gradient(to right, rgba(0,255,204,0.5), rgba(0,150,255,0.3));
+    height: 4px;
+    border-radius: 2px;
+  }
+
+  .status-bar {
+    margin-top: 16px;
+    font-size: 0.65em;
+    letter-spacing: 2px;
+    color: rgba(0,255,204,0.3);
+    text-align: center;
+  }
+
+  .dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #00ffcc;
+    box-shadow: 0 0 6px #00ffcc;
+    margin-right: 6px;
+    animation: pulse 1.5s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.2; }
+  }
+</style>
+</head>
+<body>
+
+<h1>&#9881; Robot Arm Control</h1>
+
+<div class="main">
+
+  <div id="canvas-container">
+    <canvas id="c"></canvas>
+    <div class="drag-hint">DRAG TO ROTATE · SCROLL/PINCH TO ZOOM</div>
+  </div>
+
+  <div class="controls">
+
+    <div class="control-card">
+      <div class="control-header">
+        <span class="control-name">BASE ROTATION (STEPPER)</span>
+        <span class="control-value" id="val0">0&deg;</span>
+      </div>
+      <input type="range" min="-180" max="180" value="0" oninput="updateJoint(0, this.value)">
+    </div>
+
+    <div class="control-card">
+      <div class="control-header">
+        <span class="control-name">TILT 1 (LOWER)</span>
+        <span class="control-value" id="val1">0&deg;</span>
+      </div>
+      <input type="range" min="-90" max="90" value="0" oninput="updateJoint(1, this.value)">
+    </div>
+
+    <div class="control-card">
+      <div class="control-header">
+        <span class="control-name">TILT 2 (UPPER)</span>
+        <span class="control-value" id="val2">0&deg;</span>
+      </div>
+      <input type="range" min="-90" max="90" value="0" oninput="updateJoint(2, this.value)">
+    </div>
+
+    <div class="control-card">
+      <div class="control-header">
+        <span class="control-name">GRIPPER TWIST</span>
+        <span class="control-value" id="val3">0&deg;</span>
+      </div>
+      <input type="range" min="-90" max="90" value="0" oninput="updateJoint(3, this.value)">
+    </div>
+
+    <div class="control-card">
+      <div class="control-header">
+        <span class="control-name">GRIPPER OPEN / CLOSE</span>
+        <span class="control-value" id="val4">0 mm</span>
+      </div>
+      <input type="range" min="0" max="32" value="0" oninput="updateJoint(4, this.value)">
+    </div>
+
+  </div>
+</div>
+
+<div class="status-bar"><span class="dot"></span>CONNECTED &mdash; ESP32 ROBOT ARM</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ─── SCENE SETUP ───────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const container = document.getElementById('canvas-container');
+container.style.width  = '420px';
+container.style.height = '500px';
+canvas.width  = 420;
+canvas.height = 500;
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setSize(420, 500);
+renderer.shadowMap.enabled = true;
+renderer.setPixelRatio(window.devicePixelRatio);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 420/500, 0.1, 1000);
+camera.position.set(0, 25, 60);
+camera.lookAt(0, 15, 0);
+
+// Lighting
+const ambient = new THREE.AmbientLight(0x003322, 2);
+scene.add(ambient);
+const dirLight = new THREE.DirectionalLight(0x00ffcc, 1.5);
+dirLight.position.set(20, 40, 20);
+scene.add(dirLight);
+const dirLight2 = new THREE.DirectionalLight(0x0044ff, 0.8);
+dirLight2.position.set(-20, 10, -10);
+scene.add(dirLight2);
+
+// Grid floor
+const gridHelper = new THREE.GridHelper(650, 200, 0x003322, 0x001a11);
+gridHelper.position.y = 0;
+scene.add(gridHelper);
+
+// ─── MATERIALS ─────────────────────────────────────────────────────────────
+const matBase    = new THREE.MeshPhongMaterial({ color: 0x0d3d3d, emissive: 0x001a1a, shininess: 80 });
+const matTeal    = new THREE.MeshPhongMaterial({ color: 0x0a4a4a, emissive: 0x002222, shininess: 80 });
+const matGripper = new THREE.MeshPhongMaterial({ color: 0x0d3d3d, emissive: 0x001a1a, shininess: 80 });
+
+// Wireframe overlay helper
+function addWireframe(mesh, color) {
+  const geo = new THREE.WireframeGeometry(mesh.geometry);
+  const mat = new THREE.LineBasicMaterial({ color: color, opacity: 0.15, transparent: true });
+  const wf  = new THREE.LineSegments(geo, mat);
+  mesh.add(wf);
+}
+
+// Box helper
+function makeBox(w, h, d, mat) {
+  const geo  = new THREE.BoxGeometry(w, h, d);
+  const mesh = new THREE.Mesh(geo, mat || matBase);
+  addWireframe(mesh, 0x00ffcc);
+  return mesh;
+}
+
+// Cylinder helper
+function makeCyl(rt, rb, h, mat) {
+  const geo  = new THREE.CylinderGeometry(rt, rb, h, 16);
+  const mesh = new THREE.Mesh(geo, mat);
+  addWireframe(mesh, 0x00ffcc);
+  return mesh;
+}
+
+// ─── SCALE: 1 unit = 1 cm ──────────────────────────────────────────────────
+
+// ─── BUILD ARM ─────────────────────────────────────────────────────────────
+// ROOT pivot — rotated by stepper, sits at ground level
+const rootPivot = new THREE.Group();
+scene.add(rootPivot);
+
+// base box — stays fixed, does not tilt
+const baseBox = makeBox(6, 7.9, 6, matBase);
+baseBox.position.y = 7.9 / 2;
+rootPivot.add(baseBox);
+
+// TILT1 PIVOT
+const tilt1Pivot = new THREE.Group();
+tilt1Pivot.position.y = 6;
+rootPivot.add(tilt1Pivot);
+
+// stepper shaft
+const baseJoint = makeBox(2, 8, 2, matBase);
+baseJoint.position.set(4, 2.5, 0);
+tilt1Pivot.add(baseJoint);
+
+// single arm
+const singleArm = makeBox(6, 8, 6, matTeal);
+singleArm.position.y = 8;
+tilt1Pivot.add(singleArm);
+
+// TILT2 PIVOT
+const tilt2Pivot = new THREE.Group();
+tilt2Pivot.position.y = 10;
+tilt1Pivot.add(tilt2Pivot);
+
+// Servo shafts
+const tiltshaft1 = makeBox(2, 8, 2, matTeal);
+tiltshaft1.position.set(4, 3.5, 0);
+tilt2Pivot.add(tiltshaft1);
+
+const tiltshaft2 = makeBox(2, 8, 2, matTeal);
+tiltshaft2.position.set(-4, 3.5, 0);
+tilt2Pivot.add(tiltshaft2);
+
+// base for rotation
+const Gripperroation = makeBox(6, 5, 6, matTeal);
+Gripperroation.position.set(0, 8, 0);
+tilt2Pivot.add(Gripperroation);
+
+// GRIPPER PIVOT
+const gripperPivot = new THREE.Group();
+gripperPivot.position.y = 10.5;
+tilt2Pivot.add(gripperPivot);
+
+// twist body
+const twistBody = makeBox(6, 4, 6, matTeal);
+twistBody.position.y = 2;
+gripperPivot.add(twistBody);
+
+// gripper body platform
+const gripperBody = makeBox(10.2, 3, 4, matBase);
+gripperBody.position.y = 5;
+gripperPivot.add(gripperBody);
+
+// GRIPPER ARMS — left and right
+const gripperLeft = new THREE.Group();
+gripperLeft.position.set(-.8, 6, 0);
+gripperPivot.add(gripperLeft);
+
+const leftFinger = makeBox(1.5, 6.3, 3, matGripper);
+leftFinger.position.y = 6.3 / 2;
+gripperLeft.add(leftFinger);
+
+const gripperRight = new THREE.Group();
+gripperRight.position.set(.8, 6, 0);
+gripperPivot.add(gripperRight);
+
+const rightFinger = makeBox(1.5, 6.3, 3, matGripper);
+rightFinger.position.y = 6.3 / 2;
+gripperRight.add(rightFinger);
+
+// glowing edge lines on gripper fingers
+[gripperLeft, gripperRight].forEach(g => {
+  const edges = new THREE.EdgesGeometry(g.children[0].geometry);
+  const line  = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x00ff88 }));
+  line.position.y = 6.3 / 2;
+  g.add(line);
+});
+
+// ─── ORBIT STATE ───────────────────────────────────────────────────────────
+let isDragging   = false;
+let prevMouse    = { x: 0, y: 0 };
+let spherical    = { theta: 0.3, phi: 1.1, radius: 60 };
+
+function updateCamera() {
+  camera.position.x = spherical.radius * Math.sin(spherical.phi) * Math.sin(spherical.theta);
+  camera.position.y = spherical.radius * Math.cos(spherical.phi) + 15;
+  camera.position.z = spherical.radius * Math.sin(spherical.phi) * Math.cos(spherical.theta);
+  camera.lookAt(0, 15, 0);
+}
+
+// ─── MOUSE DRAG ────────────────────────────────────────────────────────────
+canvas.addEventListener('mousedown', e => {
+  isDragging = true;
+  prevMouse = { x: e.clientX, y: e.clientY };
+});
+window.addEventListener('mouseup', () => { isDragging = false; });
+window.addEventListener('mousemove', e => {
+  if (!isDragging) return;
+  const dx = e.clientX - prevMouse.x;
+  const dy = e.clientY - prevMouse.y;
+  spherical.theta -= dx * 0.01;
+  spherical.phi    = Math.max(0.2, Math.min(Math.PI / 2, spherical.phi + dy * 0.01));
+  prevMouse = { x: e.clientX, y: e.clientY };
+  updateCamera();
+});
+
+// ─── MOUSE WHEEL ZOOM ──────────────────────────────────────────────────────
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  spherical.radius = Math.max(10, Math.min(200, spherical.radius + e.deltaY * 0.1));
+  updateCamera();
+}, { passive: false });
+
+// ─── TOUCH DRAG (single finger) ────────────────────────────────────────────
+canvas.addEventListener('touchstart', e => {
+  if (e.touches.length === 1) {
+    isDragging = true;
+    prevMouse = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }
+}, { passive: true });
+
+window.addEventListener('touchend', e => {
+  if (e.touches.length === 0) isDragging = false;
+  if (e.touches.length < 2)   lastPinchDist = null;
+});
+
+window.addEventListener('touchmove', e => {
+  // Single finger — rotate
+  if (e.touches.length === 1 && isDragging) {
+    const dx = e.touches[0].clientX - prevMouse.x;
+    const dy = e.touches[0].clientY - prevMouse.y;
+    spherical.theta -= dx * 0.01;
+    spherical.phi    = Math.max(0.2, Math.min(Math.PI / 2, spherical.phi + dy * 0.01));
+    prevMouse = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    updateCamera();
+  }
+  // Two fingers — pinch to zoom
+  if (e.touches.length === 2 && lastPinchDist !== null) {
+    const dist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+    spherical.radius = Math.max(10, Math.min(200, spherical.radius - (dist - lastPinchDist) * 0.2));
+    lastPinchDist = dist;
+    updateCamera();
+  }
+}, { passive: true });
+
+// ─── PINCH START ───────────────────────────────────────────────────────────
+let lastPinchDist = null;
+canvas.addEventListener('touchstart', e => {
+  if (e.touches.length === 2) {
+    lastPinchDist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+  }
+}, { passive: true });
+
+// ─── JOINT CONTROL ─────────────────────────────────────────────────────────
+function updateJoint(joint, value) {
+  value = parseInt(value);
+  const deg = value * Math.PI / 180;
+
+  if (joint === 0) {
+    document.getElementById("val0").innerText = value + "°";
+    rootPivot.rotation.y = deg;
+    fetch("/stepper?val=" + value);
+  }
+  else if (joint === 1) {
+    document.getElementById("val1").innerText = value + "°";
+    tilt1Pivot.rotation.x = deg;
+    fetch("/tilt1?val=" + value);
+  }
+  else if (joint === 2) {
+    document.getElementById("val2").innerText = value + "°";
+    tilt2Pivot.rotation.x = deg;
+    fetch("/tilt2?val=" + value);
+  }
+  else if (joint === 3) {
+    document.getElementById("val3").innerText = value + "°";
+    gripperPivot.rotation.y = deg;
+    fetch("/twist?val=" + value);
+  }
+  else if (joint === 4) {
+    document.getElementById("val4").innerText = value + " mm";
+    gripperLeft.position.x  = -.8 - value / 10;
+    gripperRight.position.x =  .8 + value / 10;
+    fetch("/gripper?val=" + value);
+  }
+}
+
+// ─── RENDER LOOP ───────────────────────────────────────────────────────────
+function animate() {
+  requestAnimationFrame(animate);
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+
+</body>
+</html>
