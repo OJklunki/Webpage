@@ -1,0 +1,265 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <esp_now.h>
+#include <WebServer.h>
+#include <WiFi.h>
+#include "webpage.h"
+#include <ESP32Servo.h>
+
+// starting webserver
+WebServer server(80);
+
+// web values
+int baseroatatiion = 0;
+int tilt1 = 0;
+int tilt2 = 0;
+int Rotationgripper = 0;
+int Gripperclosingmm = 0;
+
+// name and password wifi
+constexpr const char* ssid = "MyESP";
+constexpr const char* password = "formy_self"; 
+
+// GRIPPER value
+Servo gripper;
+constexpr u8_t gripperpin = 4;
+bool Close = false;
+int gripperCurrent = 0;
+constexpr u8_t SERVO_DELAY = 30;
+
+// angle to pulse
+int angleToPulse(int angle) {
+  angle = constrain(angle, 0, 180);
+  return map(angle, 0, 180, 150, 550);
+}
+
+// myservo smooth
+ void servosmooth(u8_t angle){
+    u8_t angle = angle;
+    if (angle == gripperCurrent){
+      return;
+    } else if(angle > gripperCurrent){
+      if (millis()- previousservowrite >= SERVO_DELAY){
+      previousservowrite = millis();
+      gripperCurrent++;
+      gripper.write(angleToPulse(gripperCurrent));
+    }
+    } else {
+      if (millis()- previousservowrite >= SERVO_DELAY){
+        previousservowrite = millis();
+        gripperCurrent--;
+        gripper.write(angleToPulse(gripperCurrent));
+    }
+  }
+}
+
+// busservo read
+float Readposition(HardwareSerial &serial, u8_t id) {
+    uint8_t lenght = 3;
+    uint8_t cmd = 0x1C;
+
+
+    uint8_t checksum = ~(lenght + cmd + posLow + posHigh + timeLow + timeHigh) & 0xFF;
+
+    serial.write(0x55);
+    serial.write(0x55);
+    serial.write(id);
+    serial.write(lenght);
+    serial.write(checksum);
+}
+
+// busservo write
+void Busservowrite(HardwareSerial &serial, uint8_t id, uint16_t position, uint16_t time_ms) {
+    uint8_t len = 7;
+    uint8_t cmd = 0x01;
+
+    uint8_t posLow  = position & 0xFF;
+    uint8_t posHigh = (position >> 8) & 0xFF;
+    uint8_t timeLow  = time_ms & 0xFF;
+    uint8_t timeHigh = (time_ms >> 8) & 0xFF;
+
+    uint8_t checksum = ~(id + len + cmd + posLow + posHigh + timeLow + timeHigh) & 0xFF;
+
+    serial.write(0x55);
+    serial.write(0x55);
+    serial.write(id);
+    serial.write(len);
+    serial.write(cmd);
+    serial.write(posLow);
+    serial.write(posHigh);
+    serial.write(timeLow);
+    serial.write(timeHigh);
+    serial.write(checksum);
+}
+
+// Serial Input 
+String serialData = "";
+
+// callbacks and sending functions 
+void handleRoot() {
+  server.send(200, "text/html", webpage);
+}
+
+// timming
+unsigned long previousservowrite = 0;
+unsigned long previousclosing = 0;
+unsigned long previousserialmessage = 0;
+unsigned long previousprint = 0;
+
+//  Esp now struck message - must be exsact as transmitter
+struct struct_message {
+  float a;
+  float b;
+  float os;
+};
+ 
+// object called myData
+struct_message myData;
+
+
+// recive function 
+void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
+  memcpy(&myData, incomingData, sizeof(myData));
+  if (millis() - previousserialmessage >= 2000){
+  Serial.println("Incoming information from tof ");
+  Serial.print(" ---- Distance A: ");
+  Serial.print(myData.a);
+  Serial.print(" mm ---- Distance B ");
+  Serial.println(myData.b);
+  Serial.println(" mm ---- ");
+  if (myData.os == 0){
+    Serial.println("No object was detected correctly");
+    Serial.println("");
+  } else {
+    Serial.print("Object size: ");
+    Serial.print(myData.os);
+    Serial.println(" mm");
+    Serial.println("");
+    }
+  }
+}
+
+//  Setup 
+void setup() {
+  Serial.begin(115200);
+  Serial2.begin(115200, SERIAL_8N1, 16, 17);
+  gripper.attach(gripperpin);
+  // WiFi mode innisilation
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.begin("YourHomeWifiName", "YourHomeWifiPassword");
+
+  Serial.print("Connecting to home wifi");
+  while (WiFi.status() != WL_CONNECTED) {
+  delay(500);
+  Serial.print(".");
+}
+Serial.println("");
+Serial.print("Home wifi IP: ");
+Serial.println(WiFi.localIP());
+  WiFi.softAP(ssid, password);
+  Serial.print("Web ip: ");
+  Serial.println(WiFi.softAPIP());
+  server.begin();
+
+  server.on("/", [](){
+    server.send(200, "text/html", webpage);
+  });
+  server.on("/stepper", [](){
+    baseroatatiion = server.arg("val").toInt();
+    server.send(200, "text/plain", "OK");
+  });
+
+
+
+
+  // debug function for webpage
+  server.onNotFound([](){
+  Serial.println("Not found: " + server.uri());
+  server.send(404, "text/plain", "Not found");
+  });
+
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+  
+  Serial.println("ESP-NOW Receiver Ready");
+  esp_now_register_recv_cb(OnDataRecv);
+
+
+    Serial.println("Gripper Control Ready!");
+}
+
+
+// Serial Handling 
+void handleSerial() {
+  if (Serial.available() > 0) {
+    serialData = Serial.readStringUntil('\n');
+    serialData.trim();
+
+    if (serialData == "CLOSE" || serialData == "Close" || serialData == "close"){
+      Close = true;
+      return;
+    }
+
+    int commaIndex = serialData.indexOf(',');
+    if (commaIndex <= 0) {
+      Serial.println("Error: Use '1,angle' or '2,angle' or ");
+      return;
+    }
+
+    String firstValue  = serialData.substring(0, commaIndex);
+    String secondValue = serialData.substring(commaIndex + 1);
+    int val1 = firstValue.toInt();
+    int temp = secondValue.toInt();
+
+    if (temp < 0 || temp > 180) {
+      Serial.println("Error: Angle must be 0-180");
+      return;
+    }
+    switch(val1) {
+      case 1:
+      
+      break;
+      
+      case 2:
+
+      break;
+
+      case 3:
+
+      break;
+
+      default:
+      Serial.println("Something was not correct in servo movment");
+      break;
+    }
+  }
+}
+
+void closing(){
+  if (Close){
+    if (gripperCurrent == 180){
+      Close = false;
+      Serial.println("Set the gripper first to an 180 for accurate messuarment");
+      return;
+    }
+    if (millis() - previousclosing >= SERVO_DELAY){
+      previousclosing = millis();
+      gripperCurrent--;
+      gripper.write(angleToPulse(gripperCurrent));
+
+      if (myData.a <= 18  && myData.b <= 18){
+        Close = false;
+        Serial.println("Gripper is closed to object");
+      }
+    }
+  }
+}
+
+// LOOP
+void loop() {
+  server.handleClient();
+  handleSerial();
+  closing();
+}
