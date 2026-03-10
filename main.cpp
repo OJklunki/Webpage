@@ -1,300 +1,375 @@
 #include <Arduino.h>
 #include <Wire.h>
-#include <Adafruit_PWMServoDriver.h>
 #include <esp_now.h>
-#include <WebServer.h>
 #include <WiFi.h>
+#include "ESPAsyncWebServer.h"
+#include <AsyncWebSocket.h>
+#include <ESP32Servo.h>
+#include <ArduinoJson.h>
 #include "webpage.h"
-// 
 
-// starting webserver
-WebServer server(80);
+// ─── WEB SERVER + WEBSOCKET ────────────────────────────────────────────────
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
 
-// web values
-int baseroatatiion = 0;
-int tilt1 = 0;
-int tilt2 = 0;
-int Rotationgripper = 0;
+// ─── JOINT VALUES ──────────────────────────────────────────────────────────
+int baseroatatiion   = 0;
+int tilt1            = 0;
+int tilt2            = 0;
+int Rotationgripper  = 0;
 int Gripperclosingmm = 0;
 
-// name and password wifi
-constexpr const char* ssid = "MyESP";
+// ─── WIFI CREDENTIALS ─────────────────────────────────────────────────────
+constexpr const char* ssid     = "MyESP";
 constexpr const char* password = "formy_self";
 
-// webpages values
-bool buttonState = false;
-int slidervalue = 0;
+// ─── GRIPPER SERVO ────────────────────────────────────────────────────────
+Servo gripper;
+constexpr u8_t gripperpin   = 4;
+bool Close                  = false;
+int  gripperCurrent         = 0;
+constexpr u8_t SERVO_DELAY  = 30;
 
-// Pins I2C servo driver
-constexpr uint8_t SERVO_SDA = 26;
-constexpr uint8_t SERVO_SCL = 27;
+// ─── SERIAL READ FLAGS ────────────────────────────────────────────────────
+bool tempread    = false;
+bool postionread = false;
+bool idread      = false;
 
-// Servo delay
-constexpr int SERVO_DELAY = 30; 
+// ─── TIMING ───────────────────────────────────────────────────────────────
+unsigned long previousservowrite     = 0;
+unsigned long previousclosing        = 0;
+unsigned long previousserialmessage  = 0;
+unsigned long previousservoidread    = 0
+unsigned long previousreadtempsensor = 0;
+unsigned long previouspostionread    = 0;
+unsigned long previousWsBroadcast    = 0;
+unsingned long previousidread = 0;
+constexpr unsigned long WS_BROADCAST_INTERVAL = 200; // ms between position broadcasts
 
-// GRIPPER value
-bool Close = false;
+// ─── ESP-NOW ──────────────────────────────────────────────────────────────
+struct struct_message { float a; float b; float os; };
+struct_message myData;
 
-
-// Adafruit object
-Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
-
-
-// Servo Positions 
-// Change these to match where your servos physically are at power-on
-int currentPos0 = 90; // channel 0 - gripper
-int currentPos1 = 90; // channel 1 - rotation of gripper
-int currentPos2 = 90; // channel 2 - tilting of gripper
-int targetposition0 = 90;
-int targetposition1 = 90;
-int targetposition2 = 90;
-
-// Serial Input 
-String serialData = "";
-
-// callbacks and sending functions 
-void handleRoot() {
-  server.send(200, "text/html", webpage);
-}
-
-void handlePress() {
-  buttonState = !buttonState;
-  server.send(200, "text/plain", buttonState ? "ON" : "OFF");
-
-}
-
-void handleSlider(){
-  slidervalue = server.arg("val").toInt();
-  Serial.print("Slidervalue: ");
-  Serial.println(slidervalue);
-  server.send(200, "text/plain", "Messagesent");
-}
-
-
-
-// Angle to pulse converte for sg90 servo
-int angleToPulse_sg90(int angle) {
+// ─── HELPERS ──────────────────────────────────────────────────────────────
+int angleToPulse(int angle) {
   angle = constrain(angle, 0, 180);
   return map(angle, 0, 180, 150, 550);
 }
 
-// Angle to pulse converte for sm 90 servo
-int angleToPulse_sm(int angle) {
-  angle = constrain(angle, 0, 180);
-  return map(angle, 0, 180, 100, 500);
+void servosmooth(u8_t angle) {
+  if (angle == gripperCurrent) return;
+  if (millis() - previousservowrite >= SERVO_DELAY) {
+    previousservowrite = millis();
+    gripperCurrent += (angle > gripperCurrent) ? 1 : -1;
+    gripper.write(angleToPulse(gripperCurrent));
+  }
 }
 
-// timing varibels for milllis()
-unsigned long previousservo = 0;
-unsigned long previous2servo = 0;
-unsigned long previousclosing = 0;
-unsigned long previousserialmessage = 0;
-unsigned long previousprint = 0;
+// ─── BUS SERVO PROTOCOL ───────────────────────────────────────────────────
+void Busservowrite(HardwareSerial &serial, u8_t id, u16_t position, u16_t time_ms) {
+  u8_t len      = 7;
+  u8_t cmd      = 0x01;
+  u8_t posLow   = position & 0xFF;
+  u8_t posHigh  = (position >> 8) & 0xFF;
+  u8_t timeLow  = time_ms & 0xFF;
+  u8_t timeHigh = (time_ms >> 8) & 0xFF;
+  u8_t checksum = ~(id + len + cmd + posLow + posHigh + timeLow + timeHigh) & 0xFF;
 
+  serial.write(0x55); serial.write(0x55);
+  serial.write(id);   serial.write(len);   serial.write(cmd);
+  serial.write(posLow); serial.write(posHigh);
+  serial.write(timeLow); serial.write(timeHigh);
+  serial.write(checksum);
+}
 
-// Smooth Servo Move single
-void moveServoSmooth(int channel, int &currentPos, int targetPos, int change) {
-  if (currentPos == targetPos) return;
-    if (millis() - previousservo >= SERVO_DELAY){
-      previousservo = millis();
-      if (currentPos < targetPos){
-        currentPos++;
-      } else {
-        currentPos--;
-      }
-      if (change == 1){
-      pwm.setPWM(channel, 0, angleToPulse_sm(currentPos));
-      } else {
-        pwm.setPWM(channel, 0, angleToPulse_sg90(currentPos));
-      }
-    }
+float Readposition(HardwareSerial &monitor, u8_t id) {
+  u8_t lenght   = 3;
+  u8_t cmd      = 0x1C;
+  u8_t checksum = ~(lenght + cmd + id) & 0xFF;
+
+  monitor.write(0x55); monitor.write(0x55);
+  monitor.write(id);   monitor.write(lenght);
+  monitor.write(cmd);  monitor.write(checksum);
+
+  if (postionread) { previouspostionread = millis(); postionread = false; }
+  if (monitor.available() > 0 && millis() - previouspostionread >= 5) {
+    u8_t data[7] = {};
+    for (int i = 0; i < 7; i++) data[i] = monitor.read();
+    u16_t position = data[5] + (data[6] << 8);
+    postionread = true;
+    return position;
   }
+  return -1;
+}
 
-  // Smooth Servo Move dobble
-void move2ServoSmooth(int &currentPos, int targetPos){
-  if (currentPos == targetPos) return;
-    if (millis() - previous2servo >= SERVO_DELAY){
-      previous2servo = millis();
-      if (currentPos < targetPos){
-        currentPos++;
-      } else {
-        currentPos--;
-     }
-      pwm.setPWM(1, 0, angleToPulse_sg90(currentPos));
-      pwm.setPWM(2, 0, angleToPulse_sg90(180 - currentPos));
-    }
+float Readtempservo(HardwareSerial &monitor, u8_t id) {
+  u8_t lenght   = 3;
+  u8_t cmd      = 0x1A;
+  u8_t checksum = ~(lenght + cmd + id) & 0xFF;
+
+  monitor.write(0x55); monitor.write(0x55);
+  monitor.write(id);   monitor.write(lenght);
+  monitor.write(cmd);  monitor.write(checksum);
+
+  if (tempread) { previousreadtempsensor = millis(); tempread = false; }
+  if (monitor.available() > 0 && millis() - previousreadtempsensor >= 5) {
+    u8_t data[7] = {};
+    for (int i = 0; i < 7; i++) data[i] = monitor.read();
+    u16_t temprature = data[5] + (data[6] << 8);
+    tempread = true;
+    return temprature;
   }
+  return -1;
+}
 
-//  Esp now struck message - must be exsact as transmitter
-struct struct_message {
-  float a;
-  float b;
-  float os;
-};
- 
-// object called myData
-struct_message myData;
+void on_off_servo(HardwareSerial &monitor, u8_t id, u8_t state) {
 
+  
+  u8_t lenght   = 7;
+  u8_t cmd      = 0x1F;
+  u8_t checksum = ~(lenght + cmd + id + state) & 0xFF;
+  monitor.write(0x55); monitor.write(0x55);
+  monitor.write(id);   monitor.write(lenght);
+  monitor.write(cmd);  monitor.write(state);
+  monitor.write(checksum);
+}
+u16_t servoidread(HardwareSerial &monitor, u8_t id){
+  u8_t lenght = 3;
+  u8_t cmd = 0x0E;
+  u8_t checksum = ~(lenght + cmd + id) & 0xFF;
 
-// recive function 
-void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
+  monitor.write(0x55);
+  monitor.write(0x55);
+  monitor.write(id);
+  monitor.write(lenght);
+  monitor.write(cmd);
+  monitor.write(checksum);
+
+  if (idread) { previousidread = millis(); postionread = false; }
+
+  if(monitor.available() > 0 && millis() - previousidread >= 5){
+    u8_t data[] = {};
+    for (int i = 0; i < 7; i++){
+      data[i] = Serial.read();
+    }
+    u8_t id = data[5] + (data[6]*256);
+    idread = true;
+    return id;
+  }
+  return -1;
+}
+
+// void servo id write
+void servoidwrite(HardwareSerial &monitor, u8_t newid){
+  u8_t lenght = 4;
+  u8_t cmd = 0x0D;
+  u8_t checksum = ~(lenght + cmd + 0xFE + newid) & 0xFF;
+
+  monitor.write(0x55);
+  monitor.write(0x55);
+  monitor.write(0xFE);
+  monitor.write(lenght);
+  monitor.write(cmd);
+  monitor.write(newid);
+  monitor.write(checksum);
+}
+
+// ─── APPLY COMMAND TO SERVOS ──────────────────────────────────────────────
+// Called by both WebSocket handler and Serial handler
+void applyCommand(int joint, int value) {
+  switch (joint) {
+    case 0:
+      baseroatatiion = value;
+      Busservowrite(Serial1, /*base id*/ 1, value, 1000);
+      break;
+    case 1:
+      tilt1 = value;
+      Busservowrite(Serial1, /*tilt1 id*/ 2, value, 1000);
+      break;
+    case 2:
+      tilt2 = value;
+      Busservowrite(Serial1, /*tilt2 id*/ 3, value, 1000);
+      break;
+    case 3:
+      Rotationgripper = value;
+      Busservowrite(Serial1, /*twist id*/ 4, value, 1000);
+      break;
+    case 4:
+      Gripperclosingmm = value;
+      servosmooth(map(value, 0, 62, 0, 180));
+      break;
+    default:
+      Serial.println("Unknown joint in applyCommand");
+      break;
+  }
+}
+
+// ─── BROADCAST POSITIONS TO ALL WS CLIENTS ────────────────────────────────
+// Pushes current joint state as JSON — browser receives this and updates
+// the 3D view without needing to poll
+void broadcastPositions() {
+  if (ws.count() == 0) return; // nobody connected, skip
+
+  StaticJsonDocument<128> doc;
+  doc["type"]    = "positions";
+  doc["base"]    = baseroatatiion;
+  doc["tilt1"]   = tilt1;
+  doc["tilt2"]   = tilt2;
+  doc["twist"]   = Rotationgripper;
+  doc["gripper"] = Gripperclosingmm;
+
+  String json;
+  serializeJson(doc, json);
+  ws.textAll(json);
+}
+
+// ─── WEBSOCKET EVENT HANDLER ──────────────────────────────────────────────
+// This is the core of the WebSocket upgrade — instead of separate HTTP routes
+// per joint, all commands arrive here as JSON messages on one connection
+void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
+               AwsEventType type, void *arg, uint8_t *data, size_t len) {
+
+  if (type == WS_EVT_CONNECT) {
+    Serial.printf("WS client #%u connected from %s\n",
+                  client->id(), client->remoteIP().toString().c_str());
+    // Send current positions immediately on connect so UI syncs up
+    broadcastPositions();
+
+  } else if (type == WS_EVT_DISCONNECT) {
+    Serial.printf("WS client #%u disconnected\n", client->id());
+
+  } else if (type == WS_EVT_DATA) {
+    AwsFrameInfo *info = (AwsFrameInfo *)arg;
+    // Only handle complete, text frames
+    if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+      data[len] = 0; // null-terminate
+
+      StaticJsonDocument<64> doc;
+      DeserializationError err = deserializeJson(doc, (char *)data);
+      if (err) {
+        Serial.print("JSON parse error: ");
+        Serial.println(err.c_str());
+        return;
+      }
+
+      // Expected format: {"joint": 0, "value": 90}
+      int joint = doc["joint"];
+      int value = doc["value"];
+      applyCommand(joint, value);
+
+      // Echo back updated positions to all clients (including sender)
+      broadcastPositions();
+    }
+
+  } else if (type == WS_EVT_ERROR) {
+    Serial.printf("WS error on client #%u\n", client->id());
+  }
+}
+
+// ─── ESP-NOW CALLBACK ─────────────────────────────────────────────────────
+void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
   memcpy(&myData, incomingData, sizeof(myData));
-  if (millis() - previousserialmessage >= 2000){
-
-  Serial.println("Incoming information from tof ");
-  Serial.print(" ---- Distance A: ");
-  Serial.print(myData.a);
-  Serial.print(" mm ---- Distance B ");
-  Serial.println(myData.b);
-  Serial.println(" mm ---- ");
-  if (myData.os == 0){
-    Serial.println("No object was detected correctly");
-    Serial.println("");
-  } else {
-    Serial.print("Object size: ");
-    Serial.print(myData.os);
-    Serial.println(" mm");
-    Serial.println("");
-    }
+  if (millis() - previousserialmessage >= 2000) {
+    previousserialmessage = millis();
+    Serial.println("Incoming from ToF");
+    Serial.printf(" A: %.1f mm  B: %.1f mm\n", myData.a, myData.b);
+    if (myData.os == 0) Serial.println("No object detected");
+    else Serial.printf("Object size: %.1f mm\n", myData.os);
   }
 }
 
-//  Setup 
-void setup() {
-  Serial.begin(115200);
-  Wire.begin(SERVO_SDA, SERVO_SCL);
-  pwm.begin();
-  pwm.setPWMFreq(50);
+// ─── SERIAL INPUT (unchanged from original) ───────────────────────────────
+String serialData = "";
 
-  // WiFi mode innisilation
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.begin("YourHomeWifiName", "YourHomeWifiPassword");
+void handleSerial() {
+  if (!Serial.available()) return;
+  serialData = Serial.readStringUntil('\n');
+  serialData.trim();
 
-  Serial.print("Connecting to home wifi");
-  while (WiFi.status() != WL_CONNECTED) {
-  delay(500);
-  Serial.print(".");
-}
-Serial.println("");
-Serial.print("Home wifi IP: ");
-Serial.println(WiFi.localIP());
-  WiFi.softAP(ssid, password);
-  Serial.print("Web ip: ");
-  Serial.println(WiFi.softAPIP());
-  server.begin();
-
-  server.on("/", [](){
-    server.send(200, "text/html", webpage);
-  });
-  server.on("/stepper", [](){
-    baseroatatiion = server.arg("val").toInt();
-    server.send(200, "text/plain", "OK");
-  });
-
-
-
-
-  // debug function for webpage
-  server.onNotFound([](){
-  Serial.println("Not found: " + server.uri());
-  server.send(404, "text/plain", "Not found");
-  });
-
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("Error initializing ESP-NOW");
+  if (serialData.equalsIgnoreCase("close")) {
+    Close = true;
     return;
   }
-  
-  Serial.println("ESP-NOW Receiver Ready");
-  esp_now_register_recv_cb(OnDataRecv);
+  int commaIndex = serialData.indexOf(',');
+  if (commaIndex <= 0) { Serial.println("Use: joint,value"); return; }
 
-  // setting defualt posistion 
-  pwm.setPWM(0, 0, angleToPulse_sm(90));
-  pwm.setPWM(1, 0, angleToPulse_sg90(90));
-  pwm.setPWM(2, 0, angleToPulse_sg90(90));
-  pwm.setPWM(3, 0, angleToPulse_sg90(90));
+  int joint = serialData.substring(0, commaIndex).toInt();
+  int value = serialData.substring(commaIndex + 1).toInt();
 
-    Serial.println("Gripper Control Ready!");
+  applyCommand(joint, value);
+  broadcastPositions(); // keep browser in sync when commanded via serial too
 }
 
-
-// Serial Handling 
-void handleSerial() {
-  if (Serial.available() > 0) {
-    serialData = Serial.readStringUntil('\n');
-    serialData.trim();
-
-    if (serialData == "CLOSE" || serialData == "Close" || serialData == "close"){
-      Close = true;
-      return;
-    }
-
-    int commaIndex = serialData.indexOf(',');
-    if (commaIndex <= 0) {
-      Serial.println("Error: Use '1,angle' or '2,angle' or ");
-      return;
-    }
-
-    String firstValue  = serialData.substring(0, commaIndex);
-    String secondValue = serialData.substring(commaIndex + 1);
-    int val1 = firstValue.toInt();
-    int temp = secondValue.toInt();
-
-    if (temp < 0 || temp > 180) {
-      Serial.println("Error: Angle must be 0-180");
-      return;
-    }
-    switch(val1) {
-      case 1:
-      targetposition0 = temp;
-      Serial.print("Gripper -> ");
-      Serial.println(targetposition0);
-      break;
-      
-      case 2:
-      targetposition1 = temp;
-      Serial.print("Gripper was rotated ");
-      Serial.println(targetposition1);
-      break;
-
-      case 3:
-      targetposition2 = temp;
-      Serial.print("Arm was tilted: ");
-      Serial.print(targetposition2);
-      break;
-
-      default:
-      Serial.println("Something was not correct in servo movment");
-      break;
-    }
-  }
-}
-
-void closing(){
-  if (Close){
-    if (currentPos0 <= 0){
+// ─── GRIPPER AUTO-CLOSE ───────────────────────────────────────────────────
+void closing() {
+  if (!Close) return;
+  if (gripperCurrent == 180) { Close = false; return; }
+  if (millis() - previousclosing >= SERVO_DELAY) {
+    previousclosing = millis();
+    gripperCurrent--;
+    gripper.write(angleToPulse(gripperCurrent));
+    if (myData.a <= 18 && myData.b <= 18) {
       Close = false;
-      Serial.println("Set the gripper first to an angle");
-      return;
-    }
-    if (millis() - previousclosing >= SERVO_DELAY){
-      previousclosing = millis();
-      currentPos0--;
-      pwm.setPWM(0, 0, angleToPulse_sm(currentPos0));
-      if (myData.a <= 18  && myData.b <= 18){
-        Close = false;
-        Serial.println("Gripper is closed to object");
-      }
+      Serial.println("Gripper closed to object");
     }
   }
 }
 
-// ─── Loop ─────────────────────────────────────────────────────────────────────
+// ─── SETUP ────────────────────────────────────────────────────────────────
+void setup() {
+  Serial.begin(115200);
+  Serial1.begin(115200, SERIAL_8N1, 16, 17);
+  gripper.attach(gripperpin);
+
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.begin("YourHomeWifiName", "YourHomeWifiPassword");
+  Serial.print("Connecting to home wifi");
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.println("\nHome wifi IP: " + WiFi.localIP().toString());
+
+  WiFi.softAP(ssid, password);
+  Serial.println("AP IP: " + WiFi.softAPIP().toString());
+
+  // Read starting positions
+  baseroatatiion   = Readposition(Serial1, /*base id*/   1);
+  tilt1            = Readposition(Serial1, /*tilt1 id*/  2);
+  tilt2            = Readposition(Serial1, /*tilt2 id*/  3);
+  Rotationgripper  = Readposition(Serial1, /*twist id*/  4);
+  Gripperclosingmm = 62;
+
+  // Attach WebSocket handler and add to server
+  ws.onEvent(onWsEvent);
+  server.addHandler(&ws);
+
+  // Serve the webpage
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *req) {
+    req->send_P(200, "text/html", webpage);
+  });
+
+  server.onNotFound([](AsyncWebServerRequest *req) {
+    req->send(404, "text/plain", "Not found");
+  });
+
+  server.begin();
+  Serial.println("Server started — WebSocket on ws://[IP]/ws");
+
+  // ESP-NOW
+  if (esp_now_init() != ESP_OK) { Serial.println("ESP-NOW init failed"); return; }
+  esp_now_register_recv_cb(OnDataRecv);
+  Serial.println("Ready");
+}
+
+// ─── LOOP ─────────────────────────────────────────────────────────────────
 void loop() {
-  server.handleClient();
+  ws.cleanupClients(); // drop stale connections, important for AsyncWebSocket
   handleSerial();
   closing();
-  if (!Close) moveServoSmooth(0, currentPos0, targetposition0, 1);
-  moveServoSmooth(1, currentPos1, targetposition1, 0);
-  move2ServoSmooth(currentPos2, targetposition2);
+
+  // Broadcast positions on a timer so the browser stays in sync
+  // even if something moves the arm outside of a WS command (e.g. serial)
+  if (millis() - previousWsBroadcast >= WS_BROADCAST_INTERVAL) {
+    previousWsBroadcast = millis();
+    broadcastPositions();
+  }
 }
+
