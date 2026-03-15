@@ -3,200 +3,230 @@
 #include <esp_now.h>
 #include <WiFi.h>
 #include "ESPAsyncWebServer.h"
-#include <AsyncWebSocket.h>
 #include <ESP32Servo.h>
 #include <ArduinoJson.h>
 #include "webpage.h"
+#include <Adafruit_PWMServoDriver.h>
 
-// ─── WEB SERVER + WEBSOCKET ────────────────────────────────────────────────
+// Webserver and socket
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
-// ─── JOINT VALUES ──────────────────────────────────────────────────────────
-int baseroatatiion   = 0;
-int tilt1            = 0;
-int tilt2            = 0;
-int Rotationgripper  = 0;
-int Gripperclosingmm = 0;
+// pins for servo driver adafruit adn object
+constexpr uint8_t SERVO_SDA = 33;
+constexpr uint8_t SERVO_SCL = 32;
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
-// ─── WIFI CREDENTIALS ─────────────────────────────────────────────────────
-constexpr const char* ssid     = "MyESP";
+// servo pins from hiwonder controller 
+constexpr u8_t SERVO_1_PIN = 19;
+constexpr u8_t SERVO_2_PIN = 18;
+constexpr u8_t SERVO_3_PIN = 5;
+constexpr u8_t SERVO_4_PIN = 4;
+constexpr u8_t SERVO_5_PIN = 0;
+constexpr u8_t SERVO_6_PIN = 15;
+
+// LEDC setting
+constexpr u8_t LEDC_FREQ_HZ = 50;     // 50Hz = 20ms period (standard servo)
+constexpr u8_t LEDC_RES_BITS = 16;     // 16-bit = 0–65535
+
+// convertion 
+#define US_TO_DUTY(us)  ((uint32_t)(us) * 65535 / 20000)
+
+constexpr u8_t SERVO_NUM = 6;
+
+static const uint8_t SERVO_PINS[SERVO_NUM] = {
+    SERVO_1_PIN,
+    SERVO_2_PIN,
+    SERVO_3_PIN,
+    SERVO_4_PIN,
+    SERVO_5_PIN,
+    SERVO_6_PIN
+};
+
+static const uint8_t SERVO_CHANNELS[SERVO_NUM] = { 2,3,4,5,6,7};
+
+constexpr u16_t min_Duty_HI = 500;
+constexpr u16_t max_Duty_HI = 2500;
+
+
+// Servo arm values
+int baseroatatiion = 0;
+int tilt1 = 0;
+int tilt2 = 0;
+int Rotationgripper = 0;
+int Gripperclosing = 0;
+
+// Wifi name and password
+constexpr const char* ssid = "MyESP";
 constexpr const char* password = "formy_self";
 
-// ─── GRIPPER SERVO ────────────────────────────────────────────────────────
-Servo gripper;
-constexpr u8_t gripperpin   = 4;
-bool Close                  = false;
-int  gripperCurrent         = 0;
-constexpr u8_t SERVO_DELAY  = 30;
+// buzzer pin
+constexpr u8_t buzzerpin = 27;
 
-// ─── SERIAL READ FLAGS ────────────────────────────────────────────────────
+// currentpostionf for servo
+u16_t  roationBC = 90;
+u16_t  gripperC = 90;
+u16_t  roationGC = 90;
+u16_t  tilt1C = 90;
+u16_t  tilt2C = 90;
+
+
+// Gripper servo
+bool Close = false;
+int newpostiongripper = 0;
+constexpr u8_t SERVO_DELAY = 30;
+
+// Buzzer flag and statefunction
+bool Buzzer = false;
+
+enum State {
+  Firsttone,
+  Lasttone,
+  off
+};
+State alarmstate = off;
+
+
+// Serial read flags
 bool tempread    = false;
 bool postionread = false;
 bool idread      = false;
 
-// ─── TIMING ───────────────────────────────────────────────────────────────
-unsigned long previousservowrite     = 0;
-unsigned long previousclosing        = 0;
-unsigned long previousserialmessage  = 0;
-unsigned long previousservoidread    = 0
-unsigned long previousreadtempsensor = 0;
-unsigned long previouspostionread    = 0;
-unsigned long previousWsBroadcast    = 0;
-unsingned long previousidread = 0;
-constexpr unsigned long WS_BROADCAST_INTERVAL = 200; // ms between position broadcasts
 
-// ─── ESP-NOW ──────────────────────────────────────────────────────────────
+// Timing
+unsigned long previousclosing = 0;
+unsigned long previousserialmessage = 0;
+unsigned long previousservo_ada = 0;
+unsigned long previousservo_hi = 0;
+unsigned long previousreadtempsensor = 0;
+unsigned long previousWsBroadcast= 0;
+unsigned long previousdht1 = 0;
+unsigned long previousdht2 = 0;
+unsigned long previousdht3 = 0;
+unsigned long previousalarm = 0;
+
+// interval
+constexpr u16_t WS_BROADCAST_INTERVAL = 200; 
+u16_t buzzerDelay = 500; 
+
+// ESPNOW
 struct struct_message { float a; float b; float os; };
 struct_message myData;
 
-// ─── HELPERS ──────────────────────────────────────────────────────────────
-int angleToPulse(int angle) {
+void servo_init() {
+  for (uint8_t i = 0; i < SERVO_NUM; i++) {
+    ledcSetup(SERVO_CHANNELS[i], LEDC_FREQ_HZ, LEDC_RES_BITS);
+    ledcAttachPin(SERVO_PINS[i], SERVO_CHANNELS[i]);
+  }
+}
+
+void buzzer_init(){
+  ledcSetup(6, 2000, 8);
+  ledcAttachPin(27, 6);
+  ledcAttachPin(buzzerpin, 6);
+}
+
+
+// Helper for sg servo 
+int angleToPulse_sm(int angle) {
   angle = constrain(angle, 0, 180);
   return map(angle, 0, 180, 150, 550);
 }
 
-void servosmooth(u8_t angle) {
-  if (angle == gripperCurrent) return;
-  if (millis() - previousservowrite >= SERVO_DELAY) {
-    previousservowrite = millis();
-    gripperCurrent += (angle > gripperCurrent) ? 1 : -1;
-    gripper.write(angleToPulse(gripperCurrent));
-  }
+int angleToPulse_ti(int angle) {
+  angle = constrain(angle, 0, 180);
+  return map(angle, 0, 180, 150, 550);
 }
 
-// ─── BUS SERVO PROTOCOL ───────────────────────────────────────────────────
-void Busservowrite(HardwareSerial &serial, u8_t id, u16_t position, u16_t time_ms) {
-  u8_t len      = 7;
-  u8_t cmd      = 0x01;
-  u8_t posLow   = position & 0xFF;
-  u8_t posHigh  = (position >> 8) & 0xFF;
-  u8_t timeLow  = time_ms & 0xFF;
-  u8_t timeHigh = (time_ms >> 8) & 0xFF;
-  u8_t checksum = ~(id + len + cmd + posLow + posHigh + timeLow + timeHigh) & 0xFF;
 
-  serial.write(0x55); serial.write(0x55);
-  serial.write(id);   serial.write(len);   serial.write(cmd);
-  serial.write(posLow); serial.write(posHigh);
-  serial.write(timeLow); serial.write(timeHigh);
-  serial.write(checksum);
+// helper for hiwonder servo
+int angleToPulse_hi(int angle){
+  angle = constrain(angle, 0, 180);
+  return map(angle, 0, 180, min_Duty_HI, max_Duty_HI);
 }
 
-float Readposition(HardwareSerial &monitor, u8_t id) {
-  u8_t lenght   = 3;
-  u8_t cmd      = 0x1C;
-  u8_t checksum = ~(lenght + cmd + id) & 0xFF;
 
-  monitor.write(0x55); monitor.write(0x55);
-  monitor.write(id);   monitor.write(lenght);
-  monitor.write(cmd);  monitor.write(checksum);
-
-  if (postionread) { previouspostionread = millis(); postionread = false; }
-  if (monitor.available() > 0 && millis() - previouspostionread >= 5) {
-    u8_t data[7] = {};
-    for (int i = 0; i < 7; i++) data[i] = monitor.read();
-    u16_t position = data[5] + (data[6] << 8);
-    postionread = true;
-    return position;
-  }
-  return -1;
-}
-
-float Readtempservo(HardwareSerial &monitor, u8_t id) {
-  u8_t lenght   = 3;
-  u8_t cmd      = 0x1A;
-  u8_t checksum = ~(lenght + cmd + id) & 0xFF;
-
-  monitor.write(0x55); monitor.write(0x55);
-  monitor.write(id);   monitor.write(lenght);
-  monitor.write(cmd);  monitor.write(checksum);
-
-  if (tempread) { previousreadtempsensor = millis(); tempread = false; }
-  if (monitor.available() > 0 && millis() - previousreadtempsensor >= 5) {
-    u8_t data[7] = {};
-    for (int i = 0; i < 7; i++) data[i] = monitor.read();
-    u16_t temprature = data[5] + (data[6] << 8);
-    tempread = true;
-    return temprature;
-  }
-  return -1;
-}
-
-void on_off_servo(HardwareSerial &monitor, u8_t id, u8_t state) {
-
-  
-  u8_t lenght   = 7;
-  u8_t cmd      = 0x1F;
-  u8_t checksum = ~(lenght + cmd + id + state) & 0xFF;
-  monitor.write(0x55); monitor.write(0x55);
-  monitor.write(id);   monitor.write(lenght);
-  monitor.write(cmd);  monitor.write(state);
-  monitor.write(checksum);
-}
-u16_t servoidread(HardwareSerial &monitor, u8_t id){
-  u8_t lenght = 3;
-  u8_t cmd = 0x0E;
-  u8_t checksum = ~(lenght + cmd + id) & 0xFF;
-
-  monitor.write(0x55);
-  monitor.write(0x55);
-  monitor.write(id);
-  monitor.write(lenght);
-  monitor.write(cmd);
-  monitor.write(checksum);
-
-  if (idread) { previousidread = millis(); postionread = false; }
-
-  if(monitor.available() > 0 && millis() - previousidread >= 5){
-    u8_t data[] = {};
-    for (int i = 0; i < 7; i++){
-      data[i] = Serial.read();
+void servo_move_ada(uint8_t channel, u16_t &currentPos, u16_t targetPos, uint8_t change) {
+  if (currentPos == targetPos) return;
+    if (millis() - previousservo_ada >= SERVO_DELAY){
+      previousservo_ada = millis();
+      if (currentPos < targetPos){
+        currentPos++;
+      } else {
+        currentPos--;
+      }
+      if (change == 1){
+      pwm.setPWM(channel, 0, angleToPulse_sm(currentPos));
+      } else {
+        pwm.setPWM(channel, 0, /* angle to puls for titankongrc*/ (currentPos));
+      }
     }
-    u8_t id = data[5] + (data[6]*256);
-    idread = true;
-    return id;
   }
-  return -1;
+
+
+
+
+void servo_move_HI(uint8_t servo_id, uint16_t currentpos, u16_t targetpos) {
+  if (servo_id < 1 || servo_id > SERVO_NUM) {
+    Serial.println("ERROR: servo_id out of range (1-6)");
+    return;
+    } 
+    if (targetpos > 180){
+      Serial.println("ERROR: The angle is to large (Max180\xC2\xB0)");
+      return;
+    }
+    if (currentpos == targetpos) return;
+
+    if (millis() - previousservo_hi >= SERVO_DELAY){
+      previousservo_hi = millis();
+    if (currentpos < targetpos){
+      currentpos++;
+    } else {
+      currentpos--;
+    }
+    ledcWrite(SERVO_CHANNELS[servo_id], US_TO_DUTY(angleToPulse_hi(currentpos)));
+  }
 }
 
-// void servo id write
-void servoidwrite(HardwareSerial &monitor, u8_t newid){
-  u8_t lenght = 4;
-  u8_t cmd = 0x0D;
-  u8_t checksum = ~(lenght + cmd + 0xFE + newid) & 0xFF;
-
-  monitor.write(0x55);
-  monitor.write(0x55);
-  monitor.write(0xFE);
-  monitor.write(lenght);
-  monitor.write(cmd);
-  monitor.write(newid);
-  monitor.write(checksum);
+void moveservos(){
+  servo_move_HI(0, roationBC, baseroatatiion);
+  servo_move_HI(1, tilt1C, tilt1);
+  servo_move_HI(2, tilt2C, tilt1C);
+  servo_move_HI(3, roationGC, Rotationgripper);
+  servo_move_ada(1, gripperC, Gripperclosing, 1);
 }
 
-// ─── APPLY COMMAND TO SERVOS ──────────────────────────────────────────────
-// Called by both WebSocket handler and Serial handler
+
 void applyCommand(int joint, int value) {
   switch (joint) {
     case 0:
       baseroatatiion = value;
-      Busservowrite(Serial1, /*base id*/ 1, value, 1000);
+      Serial.print("Arm rotaed: ");
+      Serial.print(value);
+      Serial.println("\xC2\xB0");
       break;
     case 1:
       tilt1 = value;
-      Busservowrite(Serial1, /*tilt1 id*/ 2, value, 1000);
+      Serial.print("Arm tilted at 1: ");
+      Serial.print(value);
+      Serial.println("\xC2\xB0");
       break;
     case 2:
       tilt2 = value;
-      Busservowrite(Serial1, /*tilt2 id*/ 3, value, 1000);
+      Serial.print("Arm tilted at 2: ");
+      Serial.print(value);
+      Serial.println("\xC2\xB0");
       break;
     case 3:
       Rotationgripper = value;
-      Busservowrite(Serial1, /*twist id*/ 4, value, 1000);
+      Serial.print("Gripper was roated: ");
+      Serial.print(value);
+      Serial.println("\xC2\xB0");
       break;
+
     case 4:
-      Gripperclosingmm = value;
-      servosmooth(map(value, 0, 62, 0, 180));
+      Gripperclosing = value;
+      newpostiongripper = value;
       break;
     default:
       Serial.println("Unknown joint in applyCommand");
@@ -204,11 +234,10 @@ void applyCommand(int joint, int value) {
   }
 }
 
-// ─── BROADCAST POSITIONS TO ALL WS CLIENTS ────────────────────────────────
-// Pushes current joint state as JSON — browser receives this and updates
-// the 3D view without needing to poll
+// Broadcast postion to webserver
+
 void broadcastPositions() {
-  if (ws.count() == 0) return; // nobody connected, skip
+  if (ws.count() == 0) return; 
 
   StaticJsonDocument<128> doc;
   doc["type"]    = "positions";
@@ -216,14 +245,14 @@ void broadcastPositions() {
   doc["tilt1"]   = tilt1;
   doc["tilt2"]   = tilt2;
   doc["twist"]   = Rotationgripper;
-  doc["gripper"] = Gripperclosingmm;
+  doc["gripper"] = Gripperclosing;
 
   String json;
   serializeJson(doc, json);
   ws.textAll(json);
 }
 
-// ─── WEBSOCKET EVENT HANDLER ──────────────────────────────────────────────
+// Eventholder webserver
 // This is the core of the WebSocket upgrade — instead of separate HTTP routes
 // per joint, all commands arrive here as JSON messages on one connection
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
@@ -266,7 +295,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
   }
 }
 
-// ─── ESP-NOW CALLBACK ─────────────────────────────────────────────────────
+// Esp now callback function
 void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
   memcpy(&myData, incomingData, sizeof(myData));
   if (millis() - previousserialmessage >= 2000) {
@@ -278,7 +307,7 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
   }
 }
 
-// ─── SERIAL INPUT (unchanged from original) ───────────────────────────────
+// Serial input 
 String serialData = "";
 
 void handleSerial() {
@@ -286,28 +315,36 @@ void handleSerial() {
   serialData = Serial.readStringUntil('\n');
   serialData.trim();
 
-  if (serialData.equalsIgnoreCase("close")) {
-    Close = true;
+  int commaIndex = serialData.indexOf(',');
+  String cmd = (commaIndex > 0) ? serialData.substring(0, commaIndex) : serialData;
+  int param  = (commaIndex > 0) ? serialData.substring(commaIndex + 1).toInt() : 0;
+
+  if (serialData.equalsIgnoreCase("close")) { Close = true; return; }
+
+  if (cmd.equalsIgnoreCase("servosetid")) {
+    Serial.print("Setting id to: "); Serial.println(param);
+    servoidwrite(Serial1, param);
     return;
   }
-  int commaIndex = serialData.indexOf(',');
+  if (cmd.equalsIgnoreCase("servoid")) {
+    Serial.print("Servo id is: ");
+    Serial.println(servoidread(Serial1, param));  
+    return;
+  }
+
   if (commaIndex <= 0) { Serial.println("Use: joint,value"); return; }
-
-  int joint = serialData.substring(0, commaIndex).toInt();
-  int value = serialData.substring(commaIndex + 1).toInt();
-
-  applyCommand(joint, value);
-  broadcastPositions(); // keep browser in sync when commanded via serial too
+  applyCommand(cmd.toInt(), param);
+  broadcastPositions();
 }
 
-// ─── GRIPPER AUTO-CLOSE ───────────────────────────────────────────────────
+// Gripper auto close
 void closing() {
   if (!Close) return;
-  if (gripperCurrent == 180) { Close = false; return; }
+  if (gripperC == 180) { Close = false; return; }
   if (millis() - previousclosing >= SERVO_DELAY) {
     previousclosing = millis();
-    gripperCurrent--;
-    gripper.write(angleToPulse(gripperCurrent));
+    gripperC--;
+    servo_move_ada(0, gripperC, newpostiongripper, 1);
     if (myData.a <= 18 && myData.b <= 18) {
       Close = false;
       Serial.println("Gripper closed to object");
@@ -315,14 +352,37 @@ void closing() {
   }
 }
 
-// ─── SETUP ────────────────────────────────────────────────────────────────
+// buzzzer alarm really loud
+void alarm(){
+  if (millis() - previousalarm >= buzzerDelay){
+    previousalarm = millis();
+    switch (alarmstate){
+      case 0:
+      ledcWriteTone(0, 750);
+      alarmstate = Lasttone;
+      buzzerDelay = 350;
+      break;
+      case 1: 
+      ledcWriteTone(0, 625);
+      alarmstate = Lasttone;
+      buzzerDelay = 500;
+      break;
+      default:
+      Serial.println("Something wrong happend with alarm state");
+      break;
+    }
+  }
+}
+
+// Setup
 void setup() {
-  Serial.begin(115200);
-  Serial1.begin(115200, SERIAL_8N1, 16, 17);
-  gripper.attach(gripperpin);
+  Serial.begin(115200); 
+  // setting up buzzer and servo
+  buzzer_init();
+  servo_init();
 
   WiFi.mode(WIFI_AP_STA);
-  WiFi.begin("YourHomeWifiName", "YourHomeWifiPassword");
+  WiFi.begin("ADDIS_INGEDA", "FULLAfarta2020");
   Serial.print("Connecting to home wifi");
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
   Serial.println("\nHome wifi IP: " + WiFi.localIP().toString());
@@ -331,11 +391,11 @@ void setup() {
   Serial.println("AP IP: " + WiFi.softAPIP().toString());
 
   // Read starting positions
-  baseroatatiion   = Readposition(Serial1, /*base id*/   1);
-  tilt1            = Readposition(Serial1, /*tilt1 id*/  2);
-  tilt2            = Readposition(Serial1, /*tilt2 id*/  3);
-  Rotationgripper  = Readposition(Serial1, /*twist id*/  4);
-  Gripperclosingmm = 62;
+  baseroatatiion = 90;
+  tilt1 = 90;
+  tilt2 = 90;
+  Rotationgripper = 90;
+  Gripperclosing = 90;
 
   // Attach WebSocket handler and add to server
   ws.onEvent(onWsEvent);
@@ -357,13 +417,22 @@ void setup() {
   if (esp_now_init() != ESP_OK) { Serial.println("ESP-NOW init failed"); return; }
   esp_now_register_recv_cb(OnDataRecv);
   Serial.println("Ready");
+
+  // setting the angles to 90
+  pwm.setPWM(0, 0, angleToPulse_sm(90));
+  pwm.setPWM(1, 0, angleToPulse_ti(90));
 }
 
-// ─── LOOP ─────────────────────────────────────────────────────────────────
+// Loop
 void loop() {
   ws.cleanupClients(); // drop stale connections, important for AsyncWebSocket
   handleSerial();
   closing();
+  moveservos();
+
+
+
+
 
   // Broadcast positions on a timer so the browser stays in sync
   // even if something moves the arm outside of a WS command (e.g. serial)
@@ -372,4 +441,8 @@ void loop() {
     broadcastPositions();
   }
 }
+
+
+
+
 
