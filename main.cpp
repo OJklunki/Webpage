@@ -34,7 +34,7 @@ bool l1 = false;
 bool r1 = false;        
 bool l2 = false;       
 bool r2 = false;   
-bool select = false;    
+bool btnselect = false;    
 bool start = false;     
 
 uint8_t lx = 0;  // left joystick X
@@ -148,7 +148,7 @@ void p2c(){
       else { bufIndex = 0; } 
       continue;
     }
-    buf[bufIndex++] = b
+    buf[bufIndex++] = b;
     if (bufIndex == 12) {
       triangle = (buf[3] >> 0) & 1;
       cross    = (buf[3] >> 2) & 1;
@@ -156,57 +156,22 @@ void p2c(){
       square   = (buf[3] >> 3) & 1;
       l1       = (buf[3] >> 4) & 1;
       r1       = (buf[3] >> 5) & 1;
-      l2       = (d[3] >> 6) & 1;
-      r2       = (d[3] >> 7) & 1;
+      l2       = (buf[3] >> 6) & 1;
+      r2       = (buf[3] >> 7) & 1;
 
-      select   = (d[4] >> 0) & 1;
-      start    = (d[4] >> 1) & 1;
+      btnselect   = (buf[4] >> 0) & 1;
+      start    = (buf[4] >> 1) & 1;
 
-      lx = d[6]; // left joystick X
-      ly = d[7]; // left joystick Y
-      rx = d[8]; // right joystick X
-      ry = d[9]; // right joystick Y
+      lx = buf[6]; // left joystick X
+      ly = buf[7]; // left joystick Y
+      rx = buf[8]; // right joystick X
+      ry = buf[9]; // right joystick Y
       bufIndex = 0;
       synced   = false;
     }
   }
 }
 
-void commands_for_p2c(){
-  if (start){
-    baseroatatiion = 90;
-    tilt1 = 90;
-    tilt2 = 90;
-    Rotationgripper = 90;
-    Gripperclosing = 180;
-    servo_move_HI(0, roationBC, baseroatatiion);
-    servo_move_HI(1, tilt1C, tilt1);
-    servo_move_HI(2, tilt2C, tilt2);
-    servo_move_HI(3, roationGC, Rotationgripper);
-    servo_move_ada(4, gripperC, Gripperclosing, 1);
-  }
-  if (select)selectpressed = true;
-  if(selectpressed){
-    servoindexp2c = 0;
-    if(r1){
-      servoindexp2c++;
-      if(servoindexp2c > 6){
-        servoindexp2c = 0;
-        Serial.print("Servoindex was to HIGH, (1-6)");
-        Serial.println("Index was reset back to 0");
-      }
-    } else if (l1){
-      servoindexp2c--;
-      if(servoindexp2c < 1){
-        servoindexp2c = 0;
-        Serial.print("Servoindex was to LOW, (1-6)");
-        Serial.println("Index was reset back to 0");
-      }
-    }
-  }
-  if (triangle) selectpressed = false;
-
-}
 
 void servo_init() {
   for (uint8_t i = 0; i < SERVO_NUM; i++) {
@@ -216,9 +181,8 @@ void servo_init() {
 }
 
 void buzzer_init(){
-  ledcSetup(6, 2000, 8);
-  ledcAttachPin(27, 6);
-  ledcAttachPin(buzzerpin, 6);
+  ledcSetup(8, 2000, 8);
+  ledcAttachPin(buzzerpin, 8);
 }
 
 
@@ -262,8 +226,8 @@ void servo_move_ada(uint8_t temp, u16_t &currentPos, u16_t targetPos, uint8_t ch
 
 
 
-void servo_move_HI(uint8_t servo_id, uint16_t currentpos, u16_t targetpos) {
-  if (servo_id < 1 || servo_id > SERVO_NUM) {
+void servo_move_HI(uint8_t servo_id, uint16_t &currentpos, u16_t targetpos) {
+  if (servo_id >= SERVO_NUM) {
     Serial.println("ERROR: servo_id out of range (1-6)");
     return;
     } 
@@ -289,9 +253,44 @@ void moveservos(){
   servo_move_HI(1, tilt1C, tilt1);
   servo_move_HI(2, tilt2C, tilt2);
   servo_move_HI(3, roationGC, Rotationgripper);
-  servo_move_ada(1, gripperC, Gripperclosing, 1);
+  servo_move_ada(4, gripperC, Gripperclosing, 1);
 }
 
+void commands_for_p2c(){
+  if (start){
+    baseroatatiion = 90;
+    tilt1 = 90;
+    tilt2 = 90;
+    Rotationgripper = 90;
+    Gripperclosing = 180;
+    servo_move_HI(0, roationBC, baseroatatiion);
+    servo_move_HI(1, tilt1C, tilt1);
+    servo_move_HI(2, tilt2C, tilt2);
+    servo_move_HI(3, roationGC, Rotationgripper);
+    servo_move_ada(4, gripperC, Gripperclosing, 1);
+  }
+  if (btnselect)selectpressed = true;
+  if(selectpressed){
+    servoindexp2c = 0;
+    if(r1){
+      servoindexp2c++;
+      if(servoindexp2c > 6){
+        servoindexp2c = 0;
+        Serial.print("Servoindex was to HIGH, (1-6)");
+        Serial.println("Index was reset back to 0");
+      }
+    } else if (l1){
+      servoindexp2c--;
+      if(servoindexp2c < 1){
+        servoindexp2c = 0;
+        Serial.print("Servoindex was to LOW, (1-6)");
+        Serial.println("Index was reset back to 0");
+      }
+    }
+  }
+  if (triangle) selectpressed = false;
+
+}
 
 void applyCommand(int joint, int value) {
   switch (joint) {
@@ -414,17 +413,6 @@ void handleSerial() {
 
   if (serialData.equalsIgnoreCase("close")) { Close = true; return; }
 
-  if (cmd.equalsIgnoreCase("servosetid")) {
-    Serial.print("Setting id to: "); Serial.println(param);
-    servoidwrite(Serial1, param);
-    return;
-  }
-  if (cmd.equalsIgnoreCase("servoid")) {
-    Serial.print("Servo id is: ");
-    Serial.println(servoidread(Serial1, param));  
-    return;
-  }
-
   if (commaIndex <= 0) { Serial.println("Use: joint,value"); return; }
   applyCommand(cmd.toInt(), param);
   broadcastPositions();
@@ -471,6 +459,9 @@ void alarm(){
 void setup() {
   Serial.begin(115200); 
   Serial2.begin(9600, SERIAL_8N1, PS2_TX_PIN, -1);
+  Wire.begin(SERVO_SDA, SERVO_SCL);
+  pwm.begin();
+  pwm.setPWMFreq(50);
   // setting up buzzer and servo
   buzzer_init();
   servo_init();
@@ -524,7 +515,7 @@ void loop() {
   closing();
   moveservos();
   p2c();
-  commands_for_p2c()
+  commands_for_p2c();
 
 
   if (millis() - previousWsBroadcast >= WS_BROADCAST_INTERVAL) {
