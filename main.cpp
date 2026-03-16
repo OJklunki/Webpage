@@ -17,6 +17,31 @@ constexpr uint8_t SERVO_SDA = 33;
 constexpr uint8_t SERVO_SCL = 32;
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
+// tx pin for p2c and retriving variables
+constexpr uint8_t PS2_TX_PIN = 34;
+uint8_t buf[12];
+uint8_t bufIndex = 0;
+bool synced = false;
+bool selectpressed = false;
+u8_t servoindexp2c = 0;
+
+// varibels from p2 controller
+bool triangle = false; 
+bool cross = false;    
+bool circle = false;      
+bool square = false;    
+bool l1 = false;        
+bool r1 = false;        
+bool l2 = false;       
+bool r2 = false;   
+bool select = false;    
+bool start = false;     
+
+uint8_t lx = 0;  // left joystick X
+uint8_t ly =  0;// left joystick Y
+uint8_t rx = 0; // right joystick X
+uint8_t ry = 0; // right joystick Y
+
 // servo pins from hiwonder controller 
 constexpr u8_t SERVO_1_PIN = 19;
 constexpr u8_t SERVO_2_PIN = 18;
@@ -113,6 +138,76 @@ u16_t buzzerDelay = 500;
 struct struct_message { float a; float b; float os; };
 struct_message myData;
 
+
+void p2c(){
+  while (Serial2.available()) {
+    uint8_t b = Serial2.read();
+    if (!synced) {
+      if (bufIndex == 0 && b == 0x55) { buf[bufIndex++] = b; }
+      else if (bufIndex == 1 && b == 0x55) { buf[bufIndex++] = b; synced = true; }
+      else { bufIndex = 0; } 
+      continue;
+    }
+    buf[bufIndex++] = b
+    if (bufIndex == 12) {
+      triangle = (buf[3] >> 0) & 1;
+      cross    = (buf[3] >> 2) & 1;
+      circle   = (buf[3] >> 1) & 1;
+      square   = (buf[3] >> 3) & 1;
+      l1       = (buf[3] >> 4) & 1;
+      r1       = (buf[3] >> 5) & 1;
+      l2       = (d[3] >> 6) & 1;
+      r2       = (d[3] >> 7) & 1;
+
+      select   = (d[4] >> 0) & 1;
+      start    = (d[4] >> 1) & 1;
+
+      lx = d[6]; // left joystick X
+      ly = d[7]; // left joystick Y
+      rx = d[8]; // right joystick X
+      ry = d[9]; // right joystick Y
+      bufIndex = 0;
+      synced   = false;
+    }
+  }
+}
+
+void commands_for_p2c(){
+  if (start){
+    baseroatatiion = 90;
+    tilt1 = 90;
+    tilt2 = 90;
+    Rotationgripper = 90;
+    Gripperclosing = 180;
+    servo_move_HI(0, roationBC, baseroatatiion);
+    servo_move_HI(1, tilt1C, tilt1);
+    servo_move_HI(2, tilt2C, tilt2);
+    servo_move_HI(3, roationGC, Rotationgripper);
+    servo_move_ada(4, gripperC, Gripperclosing, 1);
+  }
+  if (select)selectpressed = true;
+  if(selectpressed){
+    servoindexp2c = 0;
+    if(r1){
+      servoindexp2c++;
+      if(servoindexp2c > 6){
+        servoindexp2c = 0;
+        Serial.print("Servoindex was to HIGH, (1-6)");
+        Serial.println("Index was reset back to 0");
+      }
+    } else if (l1){
+      servoindexp2c--;
+      if(servoindexp2c < 1){
+        servoindexp2c = 0;
+        Serial.print("Servoindex was to LOW, (1-6)");
+        Serial.println("Index was reset back to 0");
+      }
+    }
+  }
+  if (triangle) selectpressed = false;
+
+}
+
 void servo_init() {
   for (uint8_t i = 0; i < SERVO_NUM; i++) {
     ledcSetup(SERVO_CHANNELS[i], LEDC_FREQ_HZ, LEDC_RES_BITS);
@@ -146,7 +241,8 @@ int angleToPulse_hi(int angle){
 }
 
 
-void servo_move_ada(uint8_t channel, u16_t &currentPos, u16_t targetPos, uint8_t change) {
+void servo_move_ada(uint8_t temp, u16_t &currentPos, u16_t targetPos, uint8_t change) {
+  u8_t channel = temp-3;
   if (currentPos == targetPos) return;
     if (millis() - previousservo_ada >= SERVO_DELAY){
       previousservo_ada = millis();
@@ -191,7 +287,7 @@ void servo_move_HI(uint8_t servo_id, uint16_t currentpos, u16_t targetpos) {
 void moveservos(){
   servo_move_HI(0, roationBC, baseroatatiion);
   servo_move_HI(1, tilt1C, tilt1);
-  servo_move_HI(2, tilt2C, tilt1C);
+  servo_move_HI(2, tilt2C, tilt2);
   servo_move_HI(3, roationGC, Rotationgripper);
   servo_move_ada(1, gripperC, Gripperclosing, 1);
 }
@@ -235,7 +331,6 @@ void applyCommand(int joint, int value) {
 }
 
 // Broadcast postion to webserver
-
 void broadcastPositions() {
   if (ws.count() == 0) return; 
 
@@ -252,9 +347,7 @@ void broadcastPositions() {
   ws.textAll(json);
 }
 
-// Eventholder webserver
-// This is the core of the WebSocket upgrade — instead of separate HTTP routes
-// per joint, all commands arrive here as JSON messages on one connection
+
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
                AwsEventType type, void *arg, uint8_t *data, size_t len) {
 
@@ -377,6 +470,7 @@ void alarm(){
 // Setup
 void setup() {
   Serial.begin(115200); 
+  Serial2.begin(9600, SERIAL_8N1, PS2_TX_PIN, -1);
   // setting up buzzer and servo
   buzzer_init();
   servo_init();
@@ -425,17 +519,14 @@ void setup() {
 
 // Loop
 void loop() {
-  ws.cleanupClients(); // drop stale connections, important for AsyncWebSocket
+  ws.cleanupClients();
   handleSerial();
   closing();
   moveservos();
+  p2c();
+  commands_for_p2c()
 
 
-
-
-
-  // Broadcast positions on a timer so the browser stays in sync
-  // even if something moves the arm outside of a WS command (e.g. serial)
   if (millis() - previousWsBroadcast >= WS_BROADCAST_INTERVAL) {
     previousWsBroadcast = millis();
     broadcastPositions();
