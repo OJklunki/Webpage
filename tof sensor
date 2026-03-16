@@ -1,0 +1,250 @@
+/*
+ * Dual VL53L1X ToF Sensors with Interrupts
+ * 
+ * Sensor A: Wire  - SDA=21, SCL=22, XSHUT=4, INT=17
+ * Sensor B: Wire1 - SDA=33, SCL=32, XSHUT=16, INT=5
+ *
+ * Both sensors measure simultaneously and continuously
+ */
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <VL53L1X.h>
+#include <esp_now.h>
+#include <WiFi.h>
+#include <DHT.H>
+
+// _____ ESP NOW _______
+uint8_t broadcastAddress[] = {0xD4, 0xE9, 0xF4, 0xFB, 0x19, 0x88};
+
+struct struct_message {
+  float DistanceA;
+  float DistanceB;
+  float ObjectSize;
+};
+
+struct_message myData;
+esp_now_peer_info_t peerInfo;
+
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  Serial.print("Send Status: ");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
+}
+
+// tming variables
+unsigned long previousmillis = 0;
+unsigned long previousaverage = 0;
+unsigned long previousdht[3] = {0, 0, 0};
+
+
+// intervals
+uint16_t intervaltof = 500;
+uint16_t intervaltemp = 2000;
+
+// temp varibels
+uint32_t tempA = 0;
+uint32_t tempB = 0;
+uint8_t counter = 0;
+
+// tyep of temprature sensor
+#define DHTTYPE DHT11
+
+// definitions temprature sensor
+constexpr uint8_t DHT_PIN1 = 27;
+constexpr uint8_t DHT_PIN2 = 14;
+constexpr uint8_t DHT_PIN3 = 12;
+
+DHT dht[3] = {
+  DHT(DHT_PIN1, DHT11),
+  DHT(DHT_PIN2, DHT11),
+  DHT(DHT_PIN3, DHT11)
+};
+
+
+// function for temprature reading
+float tempraturereading(u8_t id){
+  if (millis() - previousdht[id] >= intervaltemp) {
+    previousdht[id] = millis();
+    float humidity    = dht[id].readHumidity();
+    float temperature = dht[id].readTemperature();  // celsius
+
+    // check if reading failed
+    if (isnan(humidity) || isnan(temperature)) {
+    Serial.println("Failed to read from DHT11!");
+    return;
+    }
+    Serial.print("Temperature form dht: ");
+    Serial.print(temperature);
+    Serial.println(" C");
+
+    Serial.print("Humidity: ");
+    Serial.print(humidity);
+    Serial.println(" %");
+  }
+}
+ 
+
+// Pin Definitions for tof sensor
+constexpr uint8_t TOF_A_SDA   = 21;
+constexpr uint8_t TOF_A_SCL   = 22;
+constexpr uint8_t TOF_A_XSHUT = 4;
+constexpr uint8_t TOF_A_INT   = 17;
+
+constexpr uint8_t TOF_B_SDA   = 33;
+constexpr uint8_t TOF_B_SCL   = 32;
+constexpr uint8_t TOF_B_XSHUT = 16;
+constexpr uint8_t TOF_B_INT   = 5;
+
+constexpr unsigned long TOF_MEASURE_MS = 50;
+constexpr unsigned long PRINT_INTERVAL = 100;
+
+VL53L1X sensorA;
+VL53L1X sensorB;
+
+volatile bool sensorA_DataReady = false;
+volatile bool sensorB_DataReady = false;
+uint16_t distA = 0;
+uint16_t distB = 0;
+unsigned long lastPrintTime = 0;
+
+// Staggered reading state
+enum TofState { READ_A, READ_B };
+TofState tofState = READ_A;
+
+void IRAM_ATTR onSensorA_Ready() { sensorA_DataReady = true; }
+void IRAM_ATTR onSensorB_Ready() { sensorB_DataReady = true; }
+
+void setup() {
+  Serial.begin(115200);
+  for (int i = 0; i < 3; i++){
+    dht[i].begin();
+  }
+  delay(1000);
+
+  // I2C first
+  Wire.begin(TOF_A_SDA, TOF_A_SCL);
+  Wire1.begin(TOF_B_SDA, TOF_B_SCL);
+
+  // ESP-NOW
+  WiFi.mode(WIFI_STA);
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+  esp_now_register_send_cb(OnDataSent);
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Failed to add peer");
+    return;
+  }
+
+  // Sensor pins
+  pinMode(TOF_A_XSHUT, OUTPUT);
+  pinMode(TOF_B_XSHUT, OUTPUT);
+  pinMode(TOF_A_INT, INPUT_PULLUP);
+  pinMode(TOF_B_INT, INPUT_PULLUP);
+
+  digitalWrite(TOF_A_XSHUT, LOW);
+  digitalWrite(TOF_B_XSHUT, LOW);
+  delay(10);
+
+  // Init sensor A
+  Serial.print("Sensor A... ");
+  digitalWrite(TOF_A_XSHUT, HIGH);
+  delay(50);
+  sensorA.setBus(&Wire);
+  if (!sensorA.init()) { Serial.println("FAILED!"); while(1); }
+  sensorA.setDistanceMode(VL53L1X::Short);
+  sensorA.setMeasurementTimingBudget(TOF_MEASURE_MS * 1000UL);
+  sensorA.startContinuous(TOF_MEASURE_MS);
+  attachInterrupt(digitalPinToInterrupt(TOF_A_INT), onSensorA_Ready, FALLING);
+  Serial.println("Ready!");
+
+  // Init sensor B
+  Serial.print("Sensor B... ");
+  digitalWrite(TOF_B_XSHUT, HIGH);
+  delay(50);
+  sensorB.setBus(&Wire1);
+  if (!sensorB.init()) { Serial.println("FAILED!"); while(1); }
+  sensorB.setDistanceMode(VL53L1X::Short);
+  sensorB.setMeasurementTimingBudget(TOF_MEASURE_MS * 1000UL);
+  sensorB.startContinuous(TOF_MEASURE_MS);
+  attachInterrupt(digitalPinToInterrupt(TOF_B_INT), onSensorB_Ready, FALLING);
+  Serial.println("Ready!");
+
+  Serial.println("Both sensors running!");
+}
+
+void loop() {
+  // Staggered reading
+  switch(tofState) {
+    case READ_A:
+      sensorB.stopContinuous();        // stop B while A measures
+      sensorA.startContinuous(TOF_MEASURE_MS);
+      if (sensorA_DataReady) {
+        sensorA_DataReady = false;
+        distA = sensorA.read(false);
+        if (sensorA.timeoutOccurred()) Serial.println("[ERROR] Sensor A timeout");
+        tofState = READ_B;
+      }
+      break;
+
+    case READ_B:
+      sensorA.stopContinuous();        // stop A while B measures
+      sensorB.startContinuous(TOF_MEASURE_MS);
+      if (sensorB_DataReady) {
+        sensorB_DataReady = false;
+        distB = sensorB.read(false);
+        if (sensorB.timeoutOccurred()) Serial.println("[ERROR] Sensor B timeout");
+        tofState = READ_A;
+      }
+      break;
+  }
+
+  // Average and calculate
+  unsigned long now = millis();
+  if (now - lastPrintTime >= PRINT_INTERVAL) {
+    lastPrintTime = now;
+    if (distA < 8190) tempA += distA;
+    if (distB < 8190) tempB += distB;
+    counter++;
+
+    Serial.print("Sensor A: ");
+    Serial.print(distA);
+    Serial.print(" mm | Sensor B: ");
+    Serial.print(distB);
+    Serial.println(" mm");
+
+    if (millis() - previousaverage >= 500) {
+      previousaverage = millis();
+      if (counter > 0) {
+        myData.DistanceA = tempA / counter;
+        myData.DistanceB = tempB / counter;
+      }
+      tempA = 0;
+      tempB = 0;
+      counter = 0;
+      myData.ObjectSize = 62 - myData.DistanceA - myData.DistanceB + 6;
+      if (myData.ObjectSize <= 3) {
+      myData.ObjectSize = 0;
+      } else {
+       Serial.println("Something wrong happend with os");
+       Serial.println("");
+       }
+      
+      Serial.print("Avg A: "); Serial.print(myData.DistanceA);
+      Serial.print(" | Avg B: "); Serial.print(myData.DistanceB);
+      Serial.print(" | Object: "); Serial.println(myData.ObjectSize);
+    }
+  }
+
+  // Send ESP-NOW
+  if (millis() - previousmillis >= intervaltof) {
+    previousmillis = millis();
+    esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &myData, sizeof(myData));
+    if (result != ESP_OK) Serial.println("Send error");
+  }
+}
+  
