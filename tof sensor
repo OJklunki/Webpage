@@ -1,11 +1,3 @@
-/*
- * Dual VL53L1X ToF Sensors with Interrupts
- * 
- * Sensor A: Wire  - SDA=21, SCL=22, XSHUT=4, INT=17
- * Sensor B: Wire1 - SDA=33, SCL=32, XSHUT=16, INT=5
- *
- * Both sensors measure simultaneously and continuously
- */
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -15,7 +7,8 @@
 #include <DHT.H>
 
 // _____ ESP NOW _______
-uint8_t broadcastAddress[] = {0xD4, 0xE9, 0xF4, 0xFB, 0x19, 0x88};
+uint8_t broadcastAddress[] = {0x78, 0x1C, 0x3C, 0x0C, 0x59 0x88};
+
 
 struct struct_message {
   float DistanceA;
@@ -114,13 +107,122 @@ TofState tofState = READ_A;
 void IRAM_ATTR onSensorA_Ready() { sensorA_DataReady = true; }
 void IRAM_ATTR onSensorB_Ready() { sensorB_DataReady = true; }
 
+void readingTOF(){
+  // Staggered reading
+  switch(tofState) {
+    case READ_A:
+      sensorB.stopContinuous();        
+      sensorA.startContinuous(TOF_MEASURE_MS);
+      if (sensorA_DataReady) {
+        sensorA_DataReady = false;
+        distA = sensorA.read(false);
+        if (sensorA.timeoutOccurred()) Serial.println("[ERROR] Sensor A timeout");
+        tofState = READ_B;
+      }
+      break;
+
+    case READ_B:
+      sensorA.stopContinuous();        
+      sensorB.startContinuous(TOF_MEASURE_MS);
+      if (sensorB_DataReady) {
+        sensorB_DataReady = false;
+        distB = sensorB.read(false);
+        if (sensorB.timeoutOccurred()) Serial.println("[ERROR] Sensor B timeout");
+        tofState = READ_A;
+      }
+      break;
+  }
+
+
+  unsigned long now = millis();
+  if (now - lastPrintTime >= PRINT_INTERVAL) {
+    lastPrintTime = now;
+    if (distA < 8190) tempA += distA;
+    if (distB < 8190) tempB += distB;
+    counter++;
+
+    Serial.print("Sensor A: ");
+    Serial.print(distA);
+    Serial.print(" mm | Sensor B: ");
+    Serial.print(distB);
+    Serial.println(" mm");
+
+    if (millis() - previousaverage >= 500) {
+      previousaverage = millis();
+      if (counter > 0) {
+        myData.DistanceA = tempA / counter;
+        myData.DistanceB = tempB / counter;
+      }
+      tempA = 0;
+      tempB = 0;
+      counter = 0;
+      myData.ObjectSize = 62 - myData.DistanceA - myData.DistanceB + 6;
+      if (myData.ObjectSize <= 3) {
+      myData.ObjectSize = 0;
+      } else {
+       Serial.println("Something wrong happend with os");
+       Serial.println("");
+       }
+      
+      Serial.print("Avg A: "); Serial.print(myData.DistanceA);
+      Serial.print(" | Avg B: "); Serial.print(myData.DistanceB);
+      Serial.print(" | Object: "); Serial.println(myData.ObjectSize);
+    }
+  }
+}
+
+// pins for the two dirver
+constexpr u8_t mA_pwm = /*write the pin*/;
+constexpr u8_t mA_dir1 = /*write the pin*/;
+constexpr u8_t mA_dir2 = /*write the pin*/;
+constexpr u8_t mB_pwm = /*write the pin*/;
+constexpr u8_t mB_dir1 = /*write the pin*/;
+constexpr u8_t mB_dir2 = /*write the pin*/;
+
+// dc driver
+void init_L298N(){
+  pinMode(mA_dir1, OUTPUT);
+  pinMode(mA_dir2, OUTPUT);
+  pinMode(mB_dir1, OUTPUT);
+  pinMode(mB_dir2, OUTPUT);
+  ledcSetup(0, 5000, 10);
+  ledcAttachPin(mA_pwm, 0);
+  ledcSetup(1, 5000, 10);
+  ledcAttachPin(mB_pwm, 1);
+}
+
+u16_t pre_to_pwm(u8_t p){
+  u16_t pwm = map(p, 0, 100, 0, 1024);
+  return pwm;
+}
+ u8_t dirpins[] = {mA_dir1, mA_dir2, mB_dir1, mB_dir2};
+
+void L298N(u8_t a, u8_t b, u8_t s, bool d){
+  u8_t dir1 = dirpins[a + 1];
+  u8_t dir2 = dirpins[b + 1];
+  u8_t speed = s;
+  bool direction = d;
+  if (direction){
+    digitalWrite(dir1, LOW);
+    digitalWrite(dir2, HIGH);
+  } else {
+    digitalWrite(dir1, HIGH);
+    digitalWrite(dir2, LOW);
+  }
+  if (a == 1) {
+    ledcWrite(0, speed);
+  } else{
+    ledcWrite(1, speed);
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   for (int i = 0; i < 3; i++){
     dht[i].begin();
   }
   delay(1000);
-
+  init_L298N();
   // I2C first
   Wire.begin(TOF_A_SDA, TOF_A_SCL);
   Wire1.begin(TOF_B_SDA, TOF_B_SCL);
@@ -178,68 +280,7 @@ void setup() {
 }
 
 void loop() {
-  // Staggered reading
-  switch(tofState) {
-    case READ_A:
-      sensorB.stopContinuous();        // stop B while A measures
-      sensorA.startContinuous(TOF_MEASURE_MS);
-      if (sensorA_DataReady) {
-        sensorA_DataReady = false;
-        distA = sensorA.read(false);
-        if (sensorA.timeoutOccurred()) Serial.println("[ERROR] Sensor A timeout");
-        tofState = READ_B;
-      }
-      break;
-
-    case READ_B:
-      sensorA.stopContinuous();        // stop A while B measures
-      sensorB.startContinuous(TOF_MEASURE_MS);
-      if (sensorB_DataReady) {
-        sensorB_DataReady = false;
-        distB = sensorB.read(false);
-        if (sensorB.timeoutOccurred()) Serial.println("[ERROR] Sensor B timeout");
-        tofState = READ_A;
-      }
-      break;
-  }
-
-  // Average and calculate
-  unsigned long now = millis();
-  if (now - lastPrintTime >= PRINT_INTERVAL) {
-    lastPrintTime = now;
-    if (distA < 8190) tempA += distA;
-    if (distB < 8190) tempB += distB;
-    counter++;
-
-    Serial.print("Sensor A: ");
-    Serial.print(distA);
-    Serial.print(" mm | Sensor B: ");
-    Serial.print(distB);
-    Serial.println(" mm");
-
-    if (millis() - previousaverage >= 500) {
-      previousaverage = millis();
-      if (counter > 0) {
-        myData.DistanceA = tempA / counter;
-        myData.DistanceB = tempB / counter;
-      }
-      tempA = 0;
-      tempB = 0;
-      counter = 0;
-      myData.ObjectSize = 62 - myData.DistanceA - myData.DistanceB + 6;
-      if (myData.ObjectSize <= 3) {
-      myData.ObjectSize = 0;
-      } else {
-       Serial.println("Something wrong happend with os");
-       Serial.println("");
-       }
-      
-      Serial.print("Avg A: "); Serial.print(myData.DistanceA);
-      Serial.print(" | Avg B: "); Serial.print(myData.DistanceB);
-      Serial.print(" | Object: "); Serial.println(myData.ObjectSize);
-    }
-  }
-
+  readingTOF();
   // Send ESP-NOW
   if (millis() - previousmillis >= intervaltof) {
     previousmillis = millis();
@@ -247,4 +288,3 @@ void loop() {
     if (result != ESP_OK) Serial.println("Send error");
   }
 }
-  
