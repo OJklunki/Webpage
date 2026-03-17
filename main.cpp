@@ -5,8 +5,9 @@
 #include "ESPAsyncWebServer.h"
 #include <ESP32Servo.h>
 #include <ArduinoJson.h>
-#include "webpage.h"
+#include "Webpage.h"
 #include <Adafruit_PWMServoDriver.h>
+#include "esp_wpa2.h"
 
 // Webserver and socket
 AsyncWebServer server(80);
@@ -24,6 +25,7 @@ uint8_t bufIndex = 0;
 bool synced = false;
 bool selectpressed = false;
 u8_t servoindexp2c = 0;
+bool selectedservo = false;
 
 // varibels from p2 controller
 bool triangle = false; 
@@ -99,7 +101,7 @@ u16_t  tilt2C = 90;
 // Gripper servo
 bool Close = false;
 int newpostiongripper = 0;
-constexpr u8_t SERVO_DELAY = 30;
+u8_t SERVO_DELAY = 30;
 
 // Buzzer flag and statefunction
 bool Buzzer = false;
@@ -129,6 +131,7 @@ unsigned long previousdht1 = 0;
 unsigned long previousdht2 = 0;
 unsigned long previousdht3 = 0;
 unsigned long previousalarm = 0;
+unsigned long previoustest = 0;
 
 // interval
 constexpr u16_t WS_BROADCAST_INTERVAL = 200; 
@@ -169,6 +172,18 @@ void p2c(){
       bufIndex = 0;
       synced   = false;
     }
+  }
+}
+
+void just_for_testing(){
+  if(millis() - previoustest >= 1000){
+    previoustest = millis();
+    Serial.printf(
+    "BTN: tri=%d crs=%d cir=%d sqr=%d L1=%d L2=%d R1=%d R2=%d sel=%d sta=%d | "
+    "LJ: x=%3d y=%3d  RJ: x=%3d y=%3d\n",
+    triangle, cross, circle, square, l1, l2, r1, r2, btnselect, start,
+    lx, ly, rx, ry
+);
   }
 }
 
@@ -274,7 +289,7 @@ void commands_for_p2c(){
     servoindexp2c = 0;
     if(r1){
       servoindexp2c++;
-      if(servoindexp2c > 6){
+      if(servoindexp2c > 5){
         servoindexp2c = 0;
         Serial.print("Servoindex was to HIGH, (1-6)");
         Serial.println("Index was reset back to 0");
@@ -286,9 +301,13 @@ void commands_for_p2c(){
         Serial.print("Servoindex was to LOW, (1-6)");
         Serial.println("Index was reset back to 0");
       }
+    } else if (cross){
+      selectpressed = false;
+
     }
+  } else if (selectedservo){
+
   }
-  if (triangle) selectpressed = false;
 
 }
 
@@ -398,6 +417,29 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
     else Serial.printf("Object size: %.1f mm\n", myData.os);
   }
 }
+// buzzzer alarm really loud
+void alarm(){
+  if (millis() - previousalarm >= buzzerDelay){
+    previousalarm = millis();
+    switch (alarmstate){
+      case 0:
+      ledcWriteTone(8, 750);
+      alarmstate = Lasttone;
+      buzzerDelay = 350;
+      break;
+      case 1: 
+      ledcWriteTone(8, 625);
+      alarmstate = Lasttone;
+      buzzerDelay = 500;
+      break;
+      default:
+      Serial.println("Something wrong happend with alarm state");
+      break;
+    }
+  }
+}
+
+bool alarmbuzzer = false;
 
 // Serial input 
 String serialData = "";
@@ -406,6 +448,9 @@ void handleSerial() {
   if (!Serial.available()) return;
   serialData = Serial.readStringUntil('\n');
   serialData.trim();
+
+  if(serialData.equalsIgnoreCase("alarm")) alarmbuzzer = true;
+  if (serialData.equalsIgnoreCase("offalarm")) alarmbuzzer = false;
 
   int commaIndex = serialData.indexOf(',');
   String cmd = (commaIndex > 0) ? serialData.substring(0, commaIndex) : serialData;
@@ -433,28 +478,6 @@ void closing() {
   }
 }
 
-// buzzzer alarm really loud
-void alarm(){
-  if (millis() - previousalarm >= buzzerDelay){
-    previousalarm = millis();
-    switch (alarmstate){
-      case 0:
-      ledcWriteTone(0, 750);
-      alarmstate = Lasttone;
-      buzzerDelay = 350;
-      break;
-      case 1: 
-      ledcWriteTone(0, 625);
-      alarmstate = Lasttone;
-      buzzerDelay = 500;
-      break;
-      default:
-      Serial.println("Something wrong happend with alarm state");
-      break;
-    }
-  }
-}
-
 // Setup
 void setup() {
   Serial.begin(115200); 
@@ -467,7 +490,22 @@ void setup() {
   servo_init();
 
   WiFi.mode(WIFI_AP_STA);
-  WiFi.begin("ADDIS_INGEDA", "FULLAfarta2020");
+  // used when only needed wifi name and passwor : WiFi.begin("ADDIS_INGEDA", "FULLAfarta2020");
+  // this is used when you need an username to
+  constexpr const char* home_ssid     = "mrfylke-sikker";
+  constexpr const char* home_username = "oleklu19@skole.mrfylke.no";
+  constexpr const char* home_password = "TAE1122addi@esp32a4988";
+
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_AP_STA);
+
+  esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)home_username, strlen(home_username));
+  esp_wifi_sta_wpa2_ent_set_username((uint8_t *)home_username, strlen(home_username));
+  esp_wifi_sta_wpa2_ent_set_password((uint8_t *)home_password, strlen(home_password));
+  esp_wifi_sta_wpa2_ent_enable();
+
+  WiFi.begin(home_ssid);
+// end
   Serial.print("Connecting to home wifi");
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
   Serial.println("\nHome wifi IP: " + WiFi.localIP().toString());
@@ -516,6 +554,8 @@ void loop() {
   moveservos();
   p2c();
   commands_for_p2c();
+  just_for_testing();
+  if (alarmbuzzer) alarm();
 
 
   if (millis() - previousWsBroadcast >= WS_BROADCAST_INTERVAL) {
