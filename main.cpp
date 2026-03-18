@@ -124,9 +124,12 @@ bool idread      = false;
 unsigned long previousclosing = 0;
 unsigned long previousserialmessage = 0;
 unsigned long previousservo_ada = 0;
-unsigned long previousservo_hi[SERVO_NUM] = {0};
+unsigned long previousservo_hi = 0;
 unsigned long previousreadtempsensor = 0;
 unsigned long previousWsBroadcast= 0;
+unsigned long previousdht1 = 0;
+unsigned long previousdht2 = 0;
+unsigned long previousdht3 = 0;
 unsigned long previousalarm = 0;
 unsigned long previoustest = 0;
 
@@ -249,8 +252,8 @@ void servo_move_HI(uint8_t servo_id, uint16_t &currentpos, u16_t targetpos) {
     }
     if (currentpos == targetpos) return;
 
-    if (millis() - previousservo_hi[servo_id] >= SERVO_DELAY){
-      previousservo_hi[servo_id] = millis();
+    if (millis() - previousservo_hi >= SERVO_DELAY){
+      previousservo_hi = millis();
     if (currentpos < targetpos){
       currentpos++;
     } else {
@@ -487,10 +490,8 @@ void setup() {
   servo_init();
 
   WiFi.mode(WIFI_AP_STA);
-  // used when only needed wifi name and passwor : 
-  WiFi.begin("ADDIS_INGEDA", "FULLAfarta2020");
+  // used when only needed wifi name and passwor : WiFi.begin("ADDIS_INGEDA", "FULLAfarta2020");
   // this is used when you need an username to
-  /*
   constexpr const char* home_ssid     = "mrfylke-sikker";
   constexpr const char* home_username = "oleklu19@skole.mrfylke.no";
   constexpr const char* home_password = "TAE1122addi@esp32a4988";
@@ -504,7 +505,6 @@ void setup() {
   esp_wifi_sta_wpa2_ent_enable();
 
   WiFi.begin(home_ssid);
-  */
 // end
   Serial.print("Connecting to home wifi");
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
@@ -554,6 +554,7 @@ void loop() {
   moveservos();
   p2c();
   commands_for_p2c();
+  just_for_testing();
   if (alarmbuzzer) alarm();
 
 
