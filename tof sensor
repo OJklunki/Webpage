@@ -4,147 +4,141 @@
 #include <esp_now.h>
 #include <WiFi.h>
 #include <DHT.H>
-
-// _____ ESP NOW _______
-uint8_t broadcastAddress[] = {0x78, 0x1C, 0x3C, 0x0C, 0x59 0x88};
-
-
-struct struct_message {
+ 
+// ===================== SHARED STRUCT =====================
+// Must be identical in both ESPs
+struct ToF_to_Arm {
   float DistanceA;
   float DistanceB;
   float ObjectSize;
   float Temperature_avg;
   float Humidity_avg;
 };
-
-struct_message myData;
+ 
+struct Arm_to_ToF {
+  float fanspeed;  // 0-100 percent
+};
+ 
+ToF_to_Arm sendData;   // data we send to arm
+Arm_to_ToF recvData;   // data we receive from arm
+ 
+// ===================== ESP-NOW =====================
+// Replace with the MAC address of your Arm ESP32
+uint8_t armAddress[] = {0x78, 0x1C, 0x3C, 0x0C, 0x59, 0x88};
+ 
 esp_now_peer_info_t peerInfo;
-
+ 
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   Serial.print("Send Status: ");
   Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
 }
-
-// tming variables
-unsigned long previousmillis = 0;
+ 
+void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
+  memcpy(&recvData, incomingData, sizeof(recvData));
+  Serial.print("Fan speed from arm: ");
+  Serial.print(recvData.fanspeed);
+  Serial.println("%");
+}
+ 
+// ===================== TIMING =====================
+unsigned long previousmillis  = 0;
 unsigned long previousaverage = 0;
-unsigned long previousdht[3] = {0, 0, 0};
-unsigned long previousaverge_humidity = 0;
-unsigned long previousaverge_temperature = 0;
-
-
-// intervals
-uint16_t intervaltof = 500;
+unsigned long previousdht[3]  = {0, 0, 0};
+ 
+uint16_t intervaltof  = 500;
 uint16_t intervaltemp = 2000;
-
-// temp varibels
-uint32_t tempA = 0;
-uint32_t tempB = 0;
-uint8_t counter = 0;
-
-// tyep of temprature sensor
+ 
+// ===================== DHT SENSORS =====================
 #define DHTTYPE DHT11
-
-// temperature and humidity varibals
+ 
 float temperature[3] = {0, 0, 0};
-float humidity[3] = {0, 0, 0};
-
-// definitions temprature sensor
+float humidity[3]    = {0, 0, 0};
+ 
 constexpr uint8_t DHT_PIN1 = 27;
 constexpr uint8_t DHT_PIN2 = 14;
 constexpr uint8_t DHT_PIN3 = 12;
-
+ 
 DHT dht[3] = {
   DHT(DHT_PIN1, DHT11),
   DHT(DHT_PIN2, DHT11),
   DHT(DHT_PIN3, DHT11)
 };
-
-
-// function for temprature reading
-void tempraturereading(u8_t id){
+ 
+void tempraturereading(uint8_t id) {
   if (millis() - previousdht[id] >= intervaltemp) {
     previousdht[id] = millis();
-    humidity[id]    = dht[id].readHumidity();
-    temperature[id] = dht[id].readTemperature();
-
-    if (isnan(humidity[id]) || isnan(temperature[id])) {
-    Serial.println("Failed to read from DHT11!");
-    return;
+    float h = dht[id].readHumidity();
+    float t = dht[id].readTemperature();
+    if (isnan(h) || isnan(t)) {
+      Serial.print("Failed to read from DHT11 #");
+      Serial.println(id);
+      return;
     }
-    Serial.print("Temperature form dht: ");
-    Serial.print(temperature[id]);
-    Serial.println(" C");
-
-    Serial.print("Humidity: ");
-    Serial.print(humidity[id]);
-    Serial.println(" %");
+    humidity[id]    = h;
+    temperature[id] = t;
+    Serial.printf("DHT%d: %.1f C  %.1f%%\n", id, t, h);
   }
 }
-
-float averge_temperature(){
-  if (millis() - previousaverge_temperature > 2000){
-    previousaverge_temperature = millis();
-    float averge_temp = (temperature[0] + temperature[1] + temperature[2]) /3;
-    if(averge_temp <= 8 || averge_temp >= 100){
-      return -1;
-      Serial.println("Something wrong happend with the function averge_temperature");
-    } else {
-    return averge_temp;
-    myData.Temperature_avg = averge_temp;
-    }
+ 
+// Returns averaged temperature, or -1 if sensors look wrong.
+// Also writes result into sendData.
+float averge_temperature() {
+  float avg = (temperature[0] + temperature[1] + temperature[2]) / 3.0f;
+  if (avg <= 8.0f || avg >= 100.0f) {
+    Serial.println("averge_temperature: value out of range");
+    return -1.0f;
   }
+  sendData.Temperature_avg = avg;  // FIX: was after return, so never ran
+  return avg;
 }
-
-float averge_humidity(){
-  if(millis() - previousaverge_humidity > 2000){
-    previousaverge_humidity = millis();
-    float averge_hum = (humidity[0] + humidity[1] + humidity[2]) /3;
-    if(averge_hum <= 8 || averge_hum >= 100){
-      return -1;
-      Serial.println("Something wrong happend with the function averge_temperature");
-    } else {
-    return averge_hum;
-    myData.Humidity_avg = averge_hum;
-    }
+ 
+float averge_humidity() {
+  float avg = (humidity[0] + humidity[1] + humidity[2]) / 3.0f;
+  if (avg <= 8.0f || avg >= 100.0f) {
+    Serial.println("averge_humidity: value out of range");
+    return -1.0f;
   }
+  sendData.Humidity_avg = avg;  // FIX: was after return, so never ran
+  return avg;
 }
-
-
-
-// Pin Definitions for tof sensor
+ 
+// ===================== TOF SENSORS =====================
 constexpr uint8_t TOF_A_SDA   = 21;
 constexpr uint8_t TOF_A_SCL   = 22;
 constexpr uint8_t TOF_A_XSHUT = 4;
 constexpr uint8_t TOF_A_INT   = 17;
-
+ 
 constexpr uint8_t TOF_B_SDA   = 33;
 constexpr uint8_t TOF_B_SCL   = 32;
 constexpr uint8_t TOF_B_XSHUT = 16;
 constexpr uint8_t TOF_B_INT   = 5;
-
-constexpr u8_t TOF_MEASURE_MS = 50;
-constexpr u8_t PRINT_INTERVAL = 100;
-
+ 
+constexpr uint8_t TOF_MEASURE_MS = 50;
+constexpr uint8_t PRINT_INTERVAL = 100;
+ 
 VL53L1X sensorA;
 VL53L1X sensorB;
-
+ 
 volatile bool sensorA_DataReady = false;
 volatile bool sensorB_DataReady = false;
 uint16_t distA = 0;
 uint16_t distB = 0;
 unsigned long lastPrintTime = 0;
-
+ 
+uint32_t tempA   = 0;
+uint32_t tempB   = 0;
+uint8_t  counter = 0;
+ 
 enum TofState { READ_A, READ_B };
 TofState tofState = READ_A;
-
+ 
 void IRAM_ATTR onSensorA_Ready() { sensorA_DataReady = true; }
 void IRAM_ATTR onSensorB_Ready() { sensorB_DataReady = true; }
-
-void readingTOF(){
-  switch(tofState) {
+ 
+void readingTOF() {
+  switch (tofState) {
     case READ_A:
-      sensorB.stopContinuous();        
+      sensorB.stopContinuous();
       sensorA.startContinuous(TOF_MEASURE_MS);
       if (sensorA_DataReady) {
         sensorA_DataReady = false;
@@ -153,9 +147,8 @@ void readingTOF(){
         tofState = READ_B;
       }
       break;
-
     case READ_B:
-      sensorA.stopContinuous();        
+      sensorA.stopContinuous();
       sensorB.startContinuous(TOF_MEASURE_MS);
       if (sensorB_DataReady) {
         sensorB_DataReady = false;
@@ -165,91 +158,81 @@ void readingTOF(){
       }
       break;
   }
-
-
+ 
   unsigned long now = millis();
   if (now - lastPrintTime >= PRINT_INTERVAL) {
     lastPrintTime = now;
     if (distA < 8190) tempA += distA;
     if (distB < 8190) tempB += distB;
     counter++;
-
-    Serial.print("Sensor A: ");
-    Serial.print(distA);
-    Serial.print(" mm | Sensor B: ");
-    Serial.print(distB);
-    Serial.println(" mm");
-
+ 
+    Serial.printf("Sensor A: %u mm | Sensor B: %u mm\n", distA, distB);
+ 
     if (millis() - previousaverage >= 500) {
       previousaverage = millis();
       if (counter > 0) {
-        myData.DistanceA = tempA / counter;
-        myData.DistanceB = tempB / counter;
+        sendData.DistanceA = (float)tempA / counter;
+        sendData.DistanceB = (float)tempB / counter;
       }
-      tempA = 0;
-      tempB = 0;
+      tempA   = 0;
+      tempB   = 0;
       counter = 0;
-      myData.ObjectSize = 62 - myData.DistanceA - myData.DistanceB + 6;
-      if (myData.ObjectSize <= 3) {
-      myData.ObjectSize = 0;
-      } else {
-       Serial.println("Something wrong happend with os");
-       Serial.println("");
-       }
-      
-      Serial.print("Avg A: "); Serial.print(myData.DistanceA);
-      Serial.print(" | Avg B: "); Serial.print(myData.DistanceB);
-      Serial.print(" | Object: "); Serial.println(myData.ObjectSize);
+ 
+      float os = 62.0f - sendData.DistanceA - sendData.DistanceB + 6.0f;
+      sendData.ObjectSize = (os <= 3.0f) ? 0.0f : os;
+ 
+      Serial.printf("Avg A: %.1f | Avg B: %.1f | Object: %.1f\n",
+                    sendData.DistanceA, sendData.DistanceB, sendData.ObjectSize);
     }
   }
 }
-
-void init_tofpins(){
+ 
+void init_tofpins() {
   pinMode(TOF_A_XSHUT, OUTPUT);
   pinMode(TOF_B_XSHUT, OUTPUT);
   pinMode(TOF_A_INT, INPUT_PULLUP);
   pinMode(TOF_B_INT, INPUT_PULLUP);
-
   digitalWrite(TOF_A_XSHUT, LOW);
   digitalWrite(TOF_B_XSHUT, LOW);
   delay(10);
 }
-
-void init_tofA(){
+ 
+void init_tofA() {
   Serial.print("Sensor A... ");
   digitalWrite(TOF_A_XSHUT, HIGH);
   delay(50);
   sensorA.setBus(&Wire);
-  if (!sensorA.init()) { Serial.println("FAILED!"); while(1); }
+  if (!sensorA.init()) { Serial.println("FAILED!"); while (1); }
   sensorA.setDistanceMode(VL53L1X::Short);
   sensorA.setMeasurementTimingBudget(TOF_MEASURE_MS * 1000UL);
   sensorA.startContinuous(TOF_MEASURE_MS);
   attachInterrupt(digitalPinToInterrupt(TOF_A_INT), onSensorA_Ready, FALLING);
   Serial.println("Ready!");
 }
-
-void init_tofB(){
+ 
+void init_tofB() {
   Serial.print("Sensor B... ");
   digitalWrite(TOF_B_XSHUT, HIGH);
   delay(50);
   sensorB.setBus(&Wire1);
-  if (!sensorB.init()) { Serial.println("FAILED!"); while(1); }
+  if (!sensorB.init()) { Serial.println("FAILED!"); while (1); }
   sensorB.setDistanceMode(VL53L1X::Short);
   sensorB.setMeasurementTimingBudget(TOF_MEASURE_MS * 1000UL);
   sensorB.startContinuous(TOF_MEASURE_MS);
   attachInterrupt(digitalPinToInterrupt(TOF_B_INT), onSensorB_Ready, FALLING);
   Serial.println("Ready!");
 }
-// pins for the two dirver
-constexpr u8_t mA_pwm = /*write the pin*/;
-constexpr u8_t mA_dir1 = /*write the pin*/;
-constexpr u8_t mA_dir2 = /*write the pin*/;
-constexpr u8_t mB_pwm = /*write the pin*/;
-constexpr u8_t mB_dir1 = /*write the pin*/;
-constexpr u8_t mB_dir2 = /*write the pin*/;
-
-// dc driver
-void init_L298N(){
+ 
+// ===================== L298N MOTOR DRIVER =====================
+// Fill in your actual pins here
+constexpr uint8_t mA_pwm  = 25;
+constexpr uint8_t mA_dir1 = 26;
+constexpr uint8_t mA_dir2 = 13;
+constexpr uint8_t mB_pwm  = 15;
+constexpr uint8_t mB_dir1 = 2;
+constexpr uint8_t mB_dir2 = 0;
+ 
+void init_L298N() {
   pinMode(mA_dir1, OUTPUT);
   pinMode(mA_dir2, OUTPUT);
   pinMode(mB_dir1, OUTPUT);
@@ -259,94 +242,110 @@ void init_L298N(){
   ledcSetup(1, 5000, 10);
   ledcAttachPin(mB_pwm, 1);
 }
-
-u16_t pre_to_pwm(u8_t p){
-  u16_t pwm = map(p, 0, 100, 0, 1024);
-  return pwm;
+ 
+// Convert 0-100% to 0-1023 for 10-bit LEDC
+uint16_t pct_to_pwm(uint8_t p) {
+  return map(constrain(p, 0, 100), 0, 100, 0, 1023);
 }
- u8_t dirpins[] = {mA_dir1, mA_dir2, mB_dir1, mB_dir2};
-
-void L298N(u8_t a, u8_t b, u8_t s, bool d){
-  u8_t dir1 = dirpins[a];
-  u8_t dir2 = dirpins[b];
-  u8_t speed = s;
-  bool direction = d;
-  if (direction){
+ 
+// channel: 0 = motor A, 1 = motor B
+// speed: 0-100 percent
+// direction: true = forward, false = reverse
+void L298N(uint8_t channel, uint8_t speed, bool direction) {
+  uint8_t dir1 = (channel == 0) ? mA_dir1 : mB_dir1;
+  uint8_t dir2 = (channel == 0) ? mA_dir2 : mB_dir2;
+  if (direction) {
     digitalWrite(dir1, LOW);
     digitalWrite(dir2, HIGH);
   } else {
     digitalWrite(dir1, HIGH);
     digitalWrite(dir2, LOW);
   }
-  if (a == 1) {
-    ledcWrite(0, speed);
-  } else{
-    ledcWrite(1, speed);
-  }
+  ledcWrite(channel, pct_to_pwm(speed));
 }
-
-float fanspeed = 0;
-
-void fanspeed_regulator(){
-  if(averge_temperature() <= 10){
-    fanspeed = 10;
-  } else if(averge_temperature() > 10 && averge_temperature() <= 20){
-    fanspeed = 25;
-  } else if(averge_temperature() > 20 && averge_temperature() <= 22){
-    fanspeed = 35;
-  } else if(averge_temperature() > 22 && averge_temperature() <= 24){
-    fanspeed = 50;
-  } else if(averge_temperature() > 24 && averge_temperature() <= 26){
-    fanspeed = 60;
-  } else if (averge_temperature() > 26 && averge_temperature() <= 30){
-    fanspeed = 80;
-  } else {
-    fanspeed = 100;
+ 
+float fanspeed = 0.0f;
+ 
+// FIX: was missing upper bound check and had mismatched array sizes
+void fanspeed_regulator() {
+  float temp = averge_temperature();
+  if (temp < 0) return;  // sensor error, don't change fan
+ 
+  // thresholds and matching speeds (both arrays same length)
+  const float thresholds[] = { 0,  10,  20,  22,  24,  26,  30,  999 };
+  const uint8_t speeds[]   = { 0,  10,  25,  35,  50,  60,  80,  100 };
+  const uint8_t count = sizeof(thresholds) / sizeof(thresholds[0]);
+ 
+  uint8_t spd = speeds[count - 1];  // default to max
+  for (uint8_t i = 0; i < count - 1; i++) {
+    if (temp <= thresholds[i + 1]) {
+      spd = speeds[i];
+      break;
+    }
   }
+  fanspeed = spd;
 }
-
+ 
+// ===================== SETUP & LOOP =====================
 void setup() {
   Serial.begin(115200);
-  for (int i = 0; i < 3; i++){
-    dht[i].begin();
-  }
+ 
+  for (int i = 0; i < 3; i++) dht[i].begin();
   delay(1000);
+ 
   init_L298N();
-  // I2C first
+ 
   Wire.begin(TOF_A_SDA, TOF_A_SCL);
   Wire1.begin(TOF_B_SDA, TOF_B_SCL);
-
-  // ESP-NOW
+ 
   WiFi.mode(WIFI_STA);
+ 
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW");
     return;
   }
-
   esp_now_register_send_cb(OnDataSent);
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  esp_now_register_recv_cb(OnDataRecv);  // receive fanspeed from arm
+ 
+  memcpy(peerInfo.peer_addr, armAddress, 6);
   peerInfo.channel = 0;
   peerInfo.encrypt = false;
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
     Serial.println("Failed to add peer");
     return;
   }
+ 
   init_tofpins();
   init_tofA();
   init_tofB();
   Serial.println("Both sensors running!");
 }
-
+ 
 void loop() {
+  // Read all 3 DHT sensors
+  tempraturereading(0);
+  tempraturereading(1);
+  tempraturereading(2);
+ 
+  // Update averages in sendData
+  averge_temperature();
+  averge_humidity();
+ 
+  // Read ToF distances
   readingTOF();
-  // fan function
-  L298N(1, 2,fanspeed, false);
-  L298N(1, 2,fanspeed, false);
-
-  // Send ESP-NOW
+ 
+  // Regulate fans based on temperature
+  fanspeed_regulator();
+ 
+  // Drive fans — use fanspeed from arm if received, otherwise local calculation
+  float spd = (recvData.fanspeed > 0) ? recvData.fanspeed : fanspeed;
+  L298N(0, (uint8_t)spd, true);
+  L298N(1, (uint8_t)spd, true);
+ 
+  // Send all sensor data to arm ESP
   if (millis() - previousmillis >= intervaltof) {
     previousmillis = millis();
-    esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &myData, sizeof(myData));
+    esp_err_t result = esp_now_send(armAddress, (uint8_t *)&sendData, sizeof(sendData));
     if (result != ESP_OK) Serial.println("Send error");
   }
 }
