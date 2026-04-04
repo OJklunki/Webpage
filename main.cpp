@@ -7,14 +7,16 @@
 #include "Webpage.h"
 #include <Adafruit_PWMServoDriver.h>
 #include "esp_wpa2.h"
+#include "wifi_password.h"
+
 
 // Webserver and socket
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
 // pins for servo driver adafruit and object
-constexpr uint8_t SERVO_SDA = 33;
-constexpr uint8_t SERVO_SCL = 32;
+constexpr uint8_t SERVO_SDA = 32;
+constexpr uint8_t SERVO_SCL = 33;
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
 // tx pin for p2c and retriving variables
@@ -85,6 +87,7 @@ constexpr const char* password = "formy_self";
 
 // buzzer pin
 constexpr u8_t buzzerpin = 27;
+constexpr u8_t buzzerpin2 = 13;
 
 // currentpostionf for servo
 u16_t  roationBC = 90;
@@ -154,7 +157,7 @@ ToF_to_Arm sensorData;
 Arm_to_ToF fanData;      
 
 // Replace with the MAC address of your ToF ESP32
-uint8_t tofAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};  // <-- fill in ToF MAC
+uint8_t tofAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; 
 
 esp_now_peer_info_t peerInfo;
 
@@ -217,7 +220,10 @@ void servo_init() {
 void buzzer_init(){
   ledcSetup(8, 2000, 8);
   ledcAttachPin(buzzerpin, 8);
-  ledcWrite(8, 0);  // ensure buzzer starts silent
+  ledcSetup(9, 2000, 8);
+  ledcAttachPin(buzzerpin2, 9);
+  ledcWriteTone(8, 0); 
+  ledcWriteTone(9, 0); 
 }
 
 
@@ -241,7 +247,7 @@ int angleToPulse_hi(int angle){
 
 
 void servo_move_ada(uint8_t temp, u16_t &currentPos, u16_t targetPos, uint8_t change) {
-  u8_t channel = temp-4;
+  u8_t channel = temp-5;
   if (currentPos == targetPos) return;
     if (millis() - previousservo_ada >= SERVO_DELAY){
       previousservo_ada = millis();
@@ -285,7 +291,7 @@ void moveservos(){
   servo_move_HI(0, roationBC, baseroatatiion);
   servo_move_HI(1, tilt2C, tilt2);
   servo_move_HI(2, tilt3C, tilt3);
-  servo_move_HI(3, tilt2C, tilt2);
+  servo_move_HI(3, tilt1C, tilt1);
   servo_move_HI(4, roationGC, Rotationgripper);
   servo_move_ada(5, gripperC, Gripperclosing, 1);
 }
@@ -379,6 +385,9 @@ void applyCommand(int joint, int value) {
     case 5:
       Gripperclosing = value;
       newpostiongripper = value;
+      Serial.print("Gripper was closed: ");
+      Serial.print(value);
+      Serial.println("\xC2\xB0");
       break;
     default:
       Serial.println("Unknown joint in applyCommand");
@@ -475,11 +484,13 @@ void alarm(){
     switch (alarmstate){
       case Firsttone:
       ledcWriteTone(8, 750);
+      ledcWriteTone(9, 750);
       alarmstate = Lasttone;
       buzzerDelay = 350;
       break;
       case Lasttone: 
       ledcWriteTone(8, 625);
+      ledcWriteTone(9, 625);
       alarmstate = Firsttone;
       buzzerDelay = 500;
       break;
@@ -566,27 +577,25 @@ void reset_position(){
   }
 }
 
-void WiFi_set_name_password(){ 
-  WiFi.begin("ADDIS_INGEDA", "FULLAfarta2020");
-}
-
-void WiFi_set_name_username_password(){
-  constexpr const char* home_ssid     = "mrfylke-sikker";
-  constexpr const char* home_username = "oleklu19@skole.mrfylke.no";
-  constexpr const char* home_password = "TAE1122addi@esp32a4988";
-
-  WiFi.disconnect(true);
+void WiFi_host(u8_t id){
   WiFi.mode(WIFI_AP_STA);
+   if (id == 1){
+    WiFi.begin(wifi_name, wifi_password); 
+    Serial.println("Wifi_mode is WiFiname and password");
+   } else if (id == 2){
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_AP_STA);
 
-  esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)home_username, strlen(home_username));
-  esp_wifi_sta_wpa2_ent_set_username((uint8_t *)home_username, strlen(home_username));
-  esp_wifi_sta_wpa2_ent_set_password((uint8_t *)home_password, strlen(home_password));
-  esp_wifi_sta_wpa2_ent_enable();
-
-  WiFi.begin(home_ssid);
+    esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)wifi2_username, strlen(wifi2_username));
+    esp_wifi_sta_wpa2_ent_set_username((uint8_t *)wifi2_username, strlen(wifi2_username));
+    esp_wifi_sta_wpa2_ent_set_password((uint8_t *)wifi2_password, strlen(wifi2_password));
+    esp_wifi_sta_wpa2_ent_enable();
+    WiFi.begin(wifi2_name);
+    Serial.println("WiFi_mode is WiFiname, username and password");
+   } else Serial.println("WiFi_host id was set wrong in source code");
 }
 
-void WiFi_connection(){
+void WiFi_connection_ping(){
   Serial.print("Connecting to home wifi");
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
   Serial.println("\nHome wifi IP: " + WiFi.localIP().toString());
@@ -630,10 +639,8 @@ void setup() {
   buzzer_init();
   servo_init();
   reset_position();
-  WiFi.mode(WIFI_AP_STA);
-  //WiFi_set_name_password();
-  WiFi_set_name_username_password();
-  WiFi_connection();
+  WiFi_host(1);
+  WiFi_connection_ping();
   init_socket_server();
   init_esp_now();
   Serial.println("Ready");
