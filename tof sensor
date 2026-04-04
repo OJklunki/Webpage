@@ -4,10 +4,8 @@
 #include <esp_now.h>
 #include <WiFi.h>
 #include <DHT.H>
- 
-// ===================== SHARED STRUCT =====================
-// Must be identical in both ESPs
-struct ToF_to_Arm {
+
+struct second_2_main {
   float DistanceA;
   float DistanceB;
   float ObjectSize;
@@ -15,15 +13,13 @@ struct ToF_to_Arm {
   float Humidity_avg;
 };
  
-struct Arm_to_ToF {
+struct main_2_second {
   float fanspeed;  // 0-100 percent
 };
  
-ToF_to_Arm sendData;   // data we send to arm
-Arm_to_ToF recvData;   // data we receive from arm
+second_2_main sendData;  
+main_2_second recvData;   
  
-// ===================== ESP-NOW =====================
-// Replace with the MAC address of your Arm ESP32
 uint8_t armAddress[] = {0x78, 0x1C, 0x3C, 0x0C, 0x59, 0x88};
  
 esp_now_peer_info_t peerInfo;
@@ -40,23 +36,22 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
   Serial.println("%");
 }
  
-// ===================== TIMING =====================
+
 unsigned long previousmillis  = 0;
 unsigned long previousaverage = 0;
 unsigned long previousdht[3]  = {0, 0, 0};
  
 uint16_t intervaltof  = 500;
 uint16_t intervaltemp = 2000;
- 
-// ===================== DHT SENSORS =====================
+
 #define DHTTYPE DHT11
  
 float temperature[3] = {0, 0, 0};
 float humidity[3]    = {0, 0, 0};
  
-constexpr uint8_t DHT_PIN1 = 27;
+constexpr uint8_t DHT_PIN1 = 13;
 constexpr uint8_t DHT_PIN2 = 14;
-constexpr uint8_t DHT_PIN3 = 12;
+constexpr uint8_t DHT_PIN3 = 27;
  
 DHT dht[3] = {
   DHT(DHT_PIN1, DHT11),
@@ -80,15 +75,14 @@ void tempraturereading(uint8_t id) {
   }
 }
  
-// Returns averaged temperature, or -1 if sensors look wrong.
-// Also writes result into sendData.
+
 float averge_temperature() {
   float avg = (temperature[0] + temperature[1] + temperature[2]) / 3.0f;
   if (avg <= 8.0f || avg >= 100.0f) {
     Serial.println("averge_temperature: value out of range");
     return -1.0f;
   }
-  sendData.Temperature_avg = avg;  // FIX: was after return, so never ran
+  sendData.Temperature_avg = avg; 
   return avg;
 }
  
@@ -98,11 +92,11 @@ float averge_humidity() {
     Serial.println("averge_humidity: value out of range");
     return -1.0f;
   }
-  sendData.Humidity_avg = avg;  // FIX: was after return, so never ran
+  sendData.Humidity_avg = avg;  
   return avg;
 }
  
-// ===================== TOF SENSORS =====================
+
 constexpr uint8_t TOF_A_SDA   = 21;
 constexpr uint8_t TOF_A_SCL   = 22;
 constexpr uint8_t TOF_A_XSHUT = 4;
