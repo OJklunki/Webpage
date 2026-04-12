@@ -3,165 +3,167 @@
 #include <VL53L1X.h>
 #include <esp_now.h>
 #include <WiFi.h>
-#include <DHT.H>
+#include <DHT.h>
+#include "esp_wifi.h"
+#include "wifipassword.h"
+#include "esp_wpa2.h"
 
-struct second_2_main {
+struct ToF_to_Arm {
   float DistanceA;
   float DistanceB;
   float ObjectSize;
   float Temperature_avg;
   float Humidity_avg;
 };
- 
-struct main_2_second {
-  float fanspeed;  // 0-100 percent
-};
- 
-second_2_main sendData;  
-main_2_second recvData;   
- 
-uint8_t armAddress[] = {0x78, 0x1C, 0x3C, 0x0C, 0x59, 0x88};
- 
-esp_now_peer_info_t peerInfo;
- 
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  Serial.print("Send Status: ");
-  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
-}
- 
-void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
-  memcpy(&recvData, incomingData, sizeof(recvData));
-  Serial.print("Fan speed from arm: ");
-  Serial.print(recvData.fanspeed);
-  Serial.println("%");
-}
- 
 
-unsigned long previousmillis  = 0;
-unsigned long previousaverage = 0;
-unsigned long previousdht[3]  = {0, 0, 0};
- 
-uint16_t intervaltof  = 500;
-uint16_t intervaltemp = 2000;
+struct Arm_to_ToF {
+  bool  manualOverride;
+  float fanspeed;
+};
+
+ToF_to_Arm sendData;
+Arm_to_ToF recvData = {false, 0.0};
+
+bool  serialOverride = false;
+float serialSpeed    = 0.0f;
+
+uint8_t armAddress[] = {0x78, 0x1C, 0x3C, 0x0C, 0x59, 0x88};
+esp_now_peer_info_t peerInfo;
+
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  if (status != ESP_NOW_SEND_SUCCESS)
+    Serial.println("[ESP-NOW] Send fail to Main ESP");
+}
+
+void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
+  Arm_to_ToF newData;
+  memcpy(&newData, incomingData, sizeof(newData));
+  if (newData.manualOverride != recvData.manualOverride) {
+    Serial.println("\n====== FAN MODE CHANGED ======");
+    Serial.printf(" Mode: %s\n", newData.manualOverride ? "MANUAL" : "AUTOMATIC");
+    if (newData.manualOverride) Serial.printf(" Target Speed: %.0f%%\n", newData.fanspeed);
+    Serial.println("==============================\n");
+  }
+  recvData = newData;
+}
 
 #define DHTTYPE DHT11
- 
-float temperature[3] = {0, 0, 0};
-float humidity[3]    = {0, 0, 0};
- 
+
 constexpr uint8_t DHT_PIN1 = 13;
-constexpr uint8_t DHT_PIN2 = 14;
-constexpr uint8_t DHT_PIN3 = 27;
- 
-DHT dht[3] = {
-  DHT(DHT_PIN1, DHT11),
-  DHT(DHT_PIN2, DHT11),
-  DHT(DHT_PIN3, DHT11)
+constexpr uint8_t DHT_PIN2 = 27;
+
+DHT dht[2] = {
+  DHT(DHT_PIN1, DHTTYPE),
+  DHT(DHT_PIN2, DHTTYPE)
 };
- 
+
+float temperature[2] = {0, 0};
+float humidity[2]    = {0, 0};
+
+unsigned long previousdht[2] = {0, 0};
+uint16_t      intervaltemp   = 2000;
+
 void tempraturereading(uint8_t id) {
   if (millis() - previousdht[id] >= intervaltemp) {
     previousdht[id] = millis();
     float h = dht[id].readHumidity();
     float t = dht[id].readTemperature();
     if (isnan(h) || isnan(t)) {
-      Serial.print("Failed to read from DHT11 #");
-      Serial.println(id);
+      Serial.printf("[SENSOR ERROR] DHT11 #%d failed to read\n", id);
       return;
     }
     humidity[id]    = h;
     temperature[id] = t;
-    Serial.printf("DHT%d: %.1f C  %.1f%%\n", id, t, h);
+    Serial.printf("[DHT%d] %.1f C | %.1f%%\n", id, t, h);
   }
 }
- 
 
 float averge_temperature() {
-  float avg = (temperature[0] + temperature[1] + temperature[2]) / 3.0f;
-  if (avg <= 8.0f || avg >= 100.0f) {
-    Serial.println("averge_temperature: value out of range");
-    return -1.0f;
-  }
-  sendData.Temperature_avg = avg; 
+  float avg = (temperature[0] + temperature[1]) / 2.0f;
+  if (avg <= -20.0f || avg >= 100.0f) return -1.0f;
+  sendData.Temperature_avg = avg;
   return avg;
 }
- 
+
 float averge_humidity() {
-  float avg = (humidity[0] + humidity[1] + humidity[2]) / 3.0f;
-  if (avg <= 8.0f || avg >= 100.0f) {
-    Serial.println("averge_humidity: value out of range");
-    return -1.0f;
-  }
-  sendData.Humidity_avg = avg;  
+  float avg = (humidity[0] + humidity[1]) / 2.0f;
+  if (avg < 0.0f || avg > 100.0f) return -1.0f;
+  sendData.Humidity_avg = avg;
   return avg;
 }
- 
 
 constexpr uint8_t TOF_A_SDA   = 21;
 constexpr uint8_t TOF_A_SCL   = 22;
-constexpr uint8_t TOF_A_XSHUT = 4;
-constexpr uint8_t TOF_A_INT   = 17;
- 
+constexpr uint8_t TOF_A_XSHUT = 18;
+constexpr uint8_t TOF_A_INT   = 16;
+
 constexpr uint8_t TOF_B_SDA   = 33;
 constexpr uint8_t TOF_B_SCL   = 32;
-constexpr uint8_t TOF_B_XSHUT = 16;
+constexpr uint8_t TOF_B_XSHUT = 17;
 constexpr uint8_t TOF_B_INT   = 5;
- 
+
 constexpr uint8_t TOF_MEASURE_MS = 50;
 constexpr uint8_t PRINT_INTERVAL = 100;
- 
+
 VL53L1X sensorA;
 VL53L1X sensorB;
- 
+
 volatile bool sensorA_DataReady = false;
 volatile bool sensorB_DataReady = false;
 uint16_t distA = 0;
 uint16_t distB = 0;
-unsigned long lastPrintTime = 0;
- 
+unsigned long lastPrintTime   = 0;
+unsigned long previousaverage = 0;
+
 uint32_t tempA   = 0;
 uint32_t tempB   = 0;
 uint8_t  counter = 0;
- 
+
 enum TofState { READ_A, READ_B };
-TofState tofState = READ_A;
- 
+TofState tofState     = READ_A;
+TofState prevTofState = READ_B;
+
 void IRAM_ATTR onSensorA_Ready() { sensorA_DataReady = true; }
 void IRAM_ATTR onSensorB_Ready() { sensorB_DataReady = true; }
- 
+
 void readingTOF() {
-  switch (tofState) {
-    case READ_A:
+  if (tofState != prevTofState) {
+    prevTofState = tofState;
+    if (tofState == READ_A) {
       sensorB.stopContinuous();
       sensorA.startContinuous(TOF_MEASURE_MS);
+    } else {
+      sensorA.stopContinuous();
+      sensorB.startContinuous(TOF_MEASURE_MS);
+    }
+  }
+
+  switch (tofState) {
+    case READ_A:
       if (sensorA_DataReady) {
         sensorA_DataReady = false;
         distA = sensorA.read(false);
-        if (sensorA.timeoutOccurred()) Serial.println("[ERROR] Sensor A timeout");
+        if (sensorA.timeoutOccurred()) Serial.println("[TOF ERROR] Sensor A timeout");
         tofState = READ_B;
       }
       break;
     case READ_B:
-      sensorA.stopContinuous();
-      sensorB.startContinuous(TOF_MEASURE_MS);
       if (sensorB_DataReady) {
         sensorB_DataReady = false;
         distB = sensorB.read(false);
-        if (sensorB.timeoutOccurred()) Serial.println("[ERROR] Sensor B timeout");
+        if (sensorB.timeoutOccurred()) Serial.println("[TOF ERROR] Sensor B timeout");
         tofState = READ_A;
       }
       break;
   }
- 
+
   unsigned long now = millis();
   if (now - lastPrintTime >= PRINT_INTERVAL) {
     lastPrintTime = now;
     if (distA < 8190) tempA += distA;
     if (distB < 8190) tempB += distB;
     counter++;
- 
-    Serial.printf("Sensor A: %u mm | Sensor B: %u mm\n", distA, distB);
- 
+
     if (millis() - previousaverage >= 500) {
       previousaverage = millis();
       if (counter > 0) {
@@ -171,28 +173,25 @@ void readingTOF() {
       tempA   = 0;
       tempB   = 0;
       counter = 0;
- 
+
       float os = 62.0f - sendData.DistanceA - sendData.DistanceB + 6.0f;
       sendData.ObjectSize = (os <= 3.0f) ? 0.0f : os;
- 
-      Serial.printf("Avg A: %.1f | Avg B: %.1f | Object: %.1f\n",
+
+      Serial.printf("[TOF] Avg A: %.1f | Avg B: %.1f | Calc Object: %.1f\n",
                     sendData.DistanceA, sendData.DistanceB, sendData.ObjectSize);
     }
   }
 }
- 
+
 void init_tofpins() {
-  pinMode(TOF_A_XSHUT, OUTPUT);
-  pinMode(TOF_B_XSHUT, OUTPUT);
-  pinMode(TOF_A_INT, INPUT_PULLUP);
-  pinMode(TOF_B_INT, INPUT_PULLUP);
-  digitalWrite(TOF_A_XSHUT, LOW);
-  digitalWrite(TOF_B_XSHUT, LOW);
+  pinMode(TOF_A_XSHUT, OUTPUT); pinMode(TOF_B_XSHUT, OUTPUT);
+  pinMode(TOF_A_INT, INPUT_PULLUP); pinMode(TOF_B_INT, INPUT_PULLUP);
+  digitalWrite(TOF_A_XSHUT, LOW); digitalWrite(TOF_B_XSHUT, LOW);
   delay(10);
 }
- 
+
 void init_tofA() {
-  Serial.print("Sensor A... ");
+  Serial.print("[SYSTEM] Booting Sensor A... ");
   digitalWrite(TOF_A_XSHUT, HIGH);
   delay(50);
   sensorA.setBus(&Wire);
@@ -203,9 +202,9 @@ void init_tofA() {
   attachInterrupt(digitalPinToInterrupt(TOF_A_INT), onSensorA_Ready, FALLING);
   Serial.println("Ready!");
 }
- 
+
 void init_tofB() {
-  Serial.print("Sensor B... ");
+  Serial.print("[SYSTEM] Booting Sensor B... ");
   digitalWrite(TOF_B_XSHUT, HIGH);
   delay(50);
   sensorB.setBus(&Wire1);
@@ -216,130 +215,244 @@ void init_tofB() {
   attachInterrupt(digitalPinToInterrupt(TOF_B_INT), onSensorB_Ready, FALLING);
   Serial.println("Ready!");
 }
- 
-// ===================== L298N MOTOR DRIVER =====================
-// Fill in your actual pins here
-constexpr uint8_t mA_pwm  = 25;
-constexpr uint8_t mA_dir1 = 26;
-constexpr uint8_t mA_dir2 = 13;
-constexpr uint8_t mB_pwm  = 15;
-constexpr uint8_t mB_dir1 = 2;
-constexpr uint8_t mB_dir2 = 0;
- 
-void init_L298N() {
-  pinMode(mA_dir1, OUTPUT);
-  pinMode(mA_dir2, OUTPUT);
-  pinMode(mB_dir1, OUTPUT);
-  pinMode(mB_dir2, OUTPUT);
-  ledcSetup(0, 5000, 10);
-  ledcAttachPin(mA_pwm, 0);
-  ledcSetup(1, 5000, 10);
-  ledcAttachPin(mB_pwm, 1);
+
+constexpr uint8_t mA_pwm = 25;
+constexpr uint8_t mB_pwm = 26;
+constexpr uint8_t mC_pwm = 14;
+constexpr uint8_t mD_pwm = 12;
+
+void init_fans() {
+  ledcSetup(0, 475, 8); ledcAttachPin(mA_pwm, 0);
+  ledcSetup(1, 475, 8); ledcAttachPin(mB_pwm, 1);
+  ledcSetup(2, 475, 8); ledcAttachPin(mC_pwm, 2);
+  ledcSetup(3, 475, 8); ledcAttachPin(mD_pwm, 3);
+  ledcWrite(0, 0); ledcWrite(1, 0);
+  ledcWrite(2, 0); ledcWrite(3, 0);
+  Serial.println("[SYSTEM] Fans Initialized (exhaust ch0/1, intake ch2/3)");
 }
- 
-// Convert 0-100% to 0-1023 for 10-bit LEDC
-uint16_t pct_to_pwm(uint8_t p) {
-  return map(constrain(p, 0, 100), 0, 100, 0, 1023);
+
+void set_fan_speed(uint8_t speed) {
+  uint8_t duty = (uint8_t)map(constrain(speed, 0, 100), 0, 100, 0, 255);
+  ledcWrite(0, duty); ledcWrite(1, duty);
+  ledcWrite(2, duty); ledcWrite(3, duty);
 }
- 
-// channel: 0 = motor A, 1 = motor B
-// speed: 0-100 percent
-// direction: true = forward, false = reverse
-void L298N(uint8_t channel, uint8_t speed, bool direction) {
-  uint8_t dir1 = (channel == 0) ? mA_dir1 : mB_dir1;
-  uint8_t dir2 = (channel == 0) ? mA_dir2 : mB_dir2;
-  if (direction) {
-    digitalWrite(dir1, LOW);
-    digitalWrite(dir2, HIGH);
-  } else {
-    digitalWrite(dir1, HIGH);
-    digitalWrite(dir2, LOW);
-  }
-  ledcWrite(channel, pct_to_pwm(speed));
-}
- 
-float fanspeed = 0.0f;
- 
-// FIX: was missing upper bound check and had mismatched array sizes
-void fanspeed_regulator() {
+
+float currentSpeed = 0.0f;
+float targetSpeed  = 0.0f;
+
+constexpr float HYST = 1.0f;
+
+float fanspeed_regulator() {
   float temp = averge_temperature();
-  if (temp < 0) return;  // sensor error, don't change fan
- 
-  // thresholds and matching speeds (both arrays same length)
-  const float thresholds[] = { 0,  10,  20,  22,  24,  26,  30,  999 };
-  const uint8_t speeds[]   = { 0,  10,  25,  35,  50,  60,  80,  100 };
-  const uint8_t count = sizeof(thresholds) / sizeof(thresholds[0]);
- 
-  uint8_t spd = speeds[count - 1];  // default to max
+  if (temp < 0) return targetSpeed;
+
+  const float   thresholds[] = {  0,  15,  20,  22,  24,  26,  30, 999 };
+  const uint8_t speeds[]     = {  0,   0,  25,  35,  50,  60,  80, 100 };
+  const uint8_t count        = sizeof(thresholds) / sizeof(thresholds[0]);
+
+  uint8_t spd = speeds[count - 1];
   for (uint8_t i = 0; i < count - 1; i++) {
-    if (temp <= thresholds[i + 1]) {
+    if (temp <= thresholds[i + 1] - HYST) {
       spd = speeds[i];
       break;
     }
   }
-  fanspeed = spd;
+  targetSpeed = (float)spd;
+  return targetSpeed;
 }
- 
-// ===================== SETUP & LOOP =====================
-void setup() {
-  Serial.begin(115200);
- 
-  for (int i = 0; i < 3; i++) dht[i].begin();
-  delay(1000);
- 
-  init_L298N();
- 
-  Wire.begin(TOF_A_SDA, TOF_A_SCL);
-  Wire1.begin(TOF_B_SDA, TOF_B_SCL);
- 
-  WiFi.mode(WIFI_STA);
- 
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("Error initializing ESP-NOW");
-    return;
+
+constexpr float RAMP_STEP = 1.0f;
+unsigned long lastRampTime = 0;
+
+void apply_ramped_speed() {
+  if (millis() - lastRampTime < 20) return;
+  lastRampTime = millis();
+
+  if (currentSpeed < targetSpeed)
+    currentSpeed = min(currentSpeed + RAMP_STEP, targetSpeed);
+  else if (currentSpeed > targetSpeed)
+    currentSpeed = max(currentSpeed - RAMP_STEP, targetSpeed);
+
+  set_fan_speed((uint8_t)currentSpeed);
+}
+
+bool rampTestMode = false;
+
+void ramp_test() {
+  static uint8_t      testSpeed = 0;
+  static int8_t       direction = 1;
+  static unsigned long lastStep  = 0;
+
+  if (millis() - lastStep < 30) return;
+  lastStep = millis();
+
+  set_fan_speed(testSpeed);
+  Serial.printf("[RAMP TEST] Speed: %d%%\n", testSpeed);
+
+  testSpeed += direction;
+  if (testSpeed >= 100) { testSpeed = 100; direction = -1; }
+  if (testSpeed == 0)   { direction = 1; }
+}
+
+void handle_serial_input() {
+  if (!Serial.available()) return;
+
+  String input = Serial.readStringUntil('\n');
+  input.trim();
+  input.toLowerCase();
+
+  if (input == "auto") {
+    serialOverride = false;
+    Serial.println("[SERIAL] Manual override OFF — back to auto temperature control");
+
+  } else if (input == "test") {
+    rampTestMode = !rampTestMode;
+    Serial.printf("[SERIAL] Ramp test mode: %s\n", rampTestMode ? "ON" : "OFF");
+
+  } else if (input == "status") {
+    Serial.println("========== STATUS ==========");
+    Serial.printf(" Serial override : %s\n", serialOverride ? "ON" : "OFF");
+    Serial.printf(" ESP-NOW override: %s\n", recvData.manualOverride ? "ON" : "OFF");
+    Serial.printf(" Ramp test mode  : %s\n", rampTestMode ? "ON" : "OFF");
+    Serial.printf(" Serial speed    : %.0f%%\n", serialSpeed);
+    Serial.printf(" ESP-NOW speed   : %.0f%%\n", recvData.fanspeed);
+    Serial.printf(" Target speed    : %.0f%%\n", targetSpeed);
+    Serial.printf(" Current speed   : %.0f%%\n", currentSpeed);
+    Serial.printf(" Avg temperature : %.1f C\n", sendData.Temperature_avg);
+    Serial.printf(" Avg humidity    : %.1f%%\n", sendData.Humidity_avg);
+    Serial.println("============================");
+
+  } else {
+    bool isNumber = input.length() > 0;
+    for (char c : input) {
+      if (!isDigit(c)) { isNumber = false; break; }
+    }
+    if (isNumber) {
+      int spd = input.toInt();
+      if (spd < 0 || spd > 100) {
+        Serial.printf("[SERIAL] Invalid speed '%s' — enter 0–100, 'auto', 'test', or 'status'\n", input.c_str());
+      } else {
+        serialSpeed    = (float)spd;
+        serialOverride = true;
+        Serial.printf("[SERIAL] Manual override ON — fan speed set to %d%%\n", spd);
+      }
+    } else {
+      Serial.printf("[SERIAL] Unknown command '%s' — valid: 0–100, auto, test, status\n", input.c_str());
+    }
   }
+}
+
+void WiFi_host(uint8_t id) {
+  WiFi.mode(WIFI_AP_STA);
+  if (id == 1) {
+    WiFi.begin(wifi_name_private, wifi_password_private);
+    Serial.println("[WIFI] Mode: mobile hotspot");
+  } else if (id == 2) {
+    WiFi.begin(wifi_name_home, wifi_password_home);
+    Serial.println("[WIFI] Mode: home WiFi");
+  } else if (id == 3) {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_AP_STA);  
+    esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)wifi2_username, strlen(wifi2_username));
+    esp_wifi_sta_wpa2_ent_set_username((uint8_t *)wifi2_username, strlen(wifi2_username));
+    esp_wifi_sta_wpa2_ent_set_password((uint8_t *)wifi2_password, strlen(wifi2_password));
+    esp_wifi_sta_wpa2_ent_enable();
+    WiFi.begin(wifi2_name);
+    Serial.println("[WIFI] Mode: WPA2 enterprise");
+  } else {
+    Serial.println("[WIFI] WiFi_host id was set wrong in source code");
+  }
+}
+
+void WiFi_status() {
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("[WIFI] Connected! Channel: %d\n", WiFi.channel());
+  } else {
+    Serial.println("[WIFI] Not connected.");
+  }
+}
+
+void esp_now_connect() {
+  if (esp_now_init() != ESP_OK) { Serial.println("[ERROR] ESP-NOW init failed"); return; }
   esp_now_register_send_cb(OnDataSent);
-  esp_now_register_recv_cb(OnDataRecv);  // receive fanspeed from arm
- 
+  esp_now_register_recv_cb(OnDataRecv);
+
   memcpy(peerInfo.peer_addr, armAddress, 6);
   peerInfo.channel = 0;
   peerInfo.encrypt = false;
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    Serial.println("Failed to add peer");
-    return;
+    Serial.println("[ERROR] Failed to add Main Arm peer"); return;
   }
- 
-  init_tofpins();
-  init_tofA();
-  init_tofB();
-  Serial.println("Both sensors running!");
 }
- 
-void loop() {
-  // Read all 3 DHT sensors
-  tempraturereading(0);
-  tempraturereading(1);
-  tempraturereading(2);
- 
-  // Update averages in sendData
-  averge_temperature();
-  averge_humidity();
- 
-  // Read ToF distances
-  readingTOF();
- 
-  // Regulate fans based on temperature
-  fanspeed_regulator();
- 
-  // Drive fans — use fanspeed from arm if received, otherwise local calculation
-  float spd = (recvData.fanspeed > 0) ? recvData.fanspeed : fanspeed;
-  L298N(0, (uint8_t)spd, true);
-  L298N(1, (uint8_t)spd, true);
- 
-  // Send all sensor data to arm ESP
+
+void ramptest() {
+  if (rampTestMode) {
+    ramp_test();
+  } else {
+    fanspeed_regulator();
+    if (serialOverride) {
+      targetSpeed = serialSpeed;
+    } else if (recvData.manualOverride) {
+      targetSpeed = recvData.fanspeed;
+    }
+    apply_ramped_speed();
+  }
+}
+
+unsigned long previousmillis = 0;
+constexpr uint16_t intervaltof = 500;
+
+void esp_send() {
   if (millis() - previousmillis >= intervaltof) {
     previousmillis = millis();
     esp_err_t result = esp_now_send(armAddress, (uint8_t *)&sendData, sizeof(sendData));
-    if (result != ESP_OK) Serial.println("Send error");
+    if (result != ESP_OK) {
+      static unsigned long lastErrPrint = 0;
+      if (millis() - lastErrPrint >= 60000) {
+        lastErrPrint = millis();
+        Serial.println("[ESP-NOW] Arm not reachable");
+      }
+    }
   }
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("\n\n------- TOF ESP BOOT -------");
+
+  unsigned long t = millis();
+  previousdht[0] = t;
+  previousdht[1] = t + 1000;
+  for (int i = 0; i < 2; i++) dht[i].begin();
+  delay(1000);
+
+  init_fans();
+  Wire.begin(TOF_A_SDA,  TOF_A_SCL);
+  Wire1.begin(TOF_B_SDA, TOF_B_SCL);
+
+  WiFi_host(2);
+  Serial.print("[WIFI] Connecting");
+  unsigned long wifiStart = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 10000) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  WiFi_status();
+  esp_now_connect();
+  init_tofpins();
+  init_tofA();
+  init_tofB();
+  Serial.println("------- ALL INIT -------");
+}
+
+void loop() {
+  handle_serial_input();
+  tempraturereading(0);
+  tempraturereading(1);
+  averge_temperature();
+  averge_humidity();
+  readingTOF();
+  ramptest();
+  esp_send();
 }
