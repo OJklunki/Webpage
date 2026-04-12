@@ -71,7 +71,7 @@ const char webpage[] PROGMEM = R"rawliteral(
   .controls {
     display: flex;
     flex-direction: column;
-    gap: 24px;
+    gap: 18px;
     min-width: 320px;
   }
 
@@ -85,6 +85,13 @@ const char webpage[] PROGMEM = R"rawliteral(
 
   .control-card:hover { border-color: rgba(0,255,204,0.4); }
 
+  /* IK card gets a distinct accent colour */
+  .ik-card {
+    background: rgba(0,255,100,0.04);
+    border-color: rgba(0,255,100,0.25);
+  }
+  .ik-card:hover { border-color: rgba(0,255,100,0.55); }
+
   .control-header {
     display: flex;
     justify-content: space-between;
@@ -95,6 +102,27 @@ const char webpage[] PROGMEM = R"rawliteral(
   .control-name  { font-size: 0.65em; letter-spacing: 2px; color: #00ffcc; }
   .control-value { font-size: 0.85em; color: #00aaff; min-width: 45px; text-align: right; }
 
+  .ik-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .ik-label {
+    font-size: 0.6em;
+    letter-spacing: 1px;
+    color: rgba(0,255,204,0.6);
+    min-width: 52px;
+  }
+
+  .ik-val {
+    font-size: 0.75em;
+    color: #00aaff;
+    min-width: 46px;
+    text-align: right;
+  }
+
   input[type=range] {
     -webkit-appearance: none;
     width: 100%;
@@ -102,6 +130,7 @@ const char webpage[] PROGMEM = R"rawliteral(
     background: rgba(0,255,204,0.15);
     border-radius: 2px;
     outline: none;
+    flex: 1;
   }
 
   input[type=range]::-webkit-slider-thumb {
@@ -119,12 +148,65 @@ const char webpage[] PROGMEM = R"rawliteral(
     border-radius: 2px;
   }
 
+  /* Green accent slider for IK controls */
+  .ik-card input[type=range]::-webkit-slider-thumb { background: #00ff77; box-shadow: 0 0 8px rgba(0,255,100,0.8); }
+  .ik-card input[type=range]::-webkit-slider-runnable-track {
+    background: linear-gradient(to right, rgba(0,255,100,0.5), rgba(0,200,120,0.3));
+  }
+
+  .lower-btn {
+    width: 100%;
+    margin-top: 4px;
+    padding: 10px 0;
+    background: rgba(0,255,100,0.08);
+    border: 1px solid rgba(0,255,100,0.5);
+    border-radius: 6px;
+    color: #00ff77;
+    font-family: 'Courier New', monospace;
+    font-size: 0.75em;
+    letter-spacing: 3px;
+    cursor: pointer;
+    transition: background 0.15s, box-shadow 0.15s;
+  }
+
+  .lower-btn:hover {
+    background: rgba(0,255,100,0.18);
+    box-shadow: 0 0 14px rgba(0,255,100,0.3);
+  }
+
+  .lower-btn:active {
+    background: rgba(0,255,100,0.35);
+  }
+
+  .lower-btn.running {
+    color: #ffcc00;
+    border-color: rgba(255,200,0,0.5);
+    background: rgba(255,200,0,0.07);
+    animation: btn-pulse 0.6s infinite alternate;
+    pointer-events: none;
+  }
+
+  @keyframes btn-pulse {
+    from { box-shadow: 0 0 6px rgba(255,200,0,0.2); }
+    to   { box-shadow: 0 0 18px rgba(255,200,0,0.5); }
+  }
+
+  .ik-status {
+    font-size: 0.58em;
+    letter-spacing: 1px;
+    color: rgba(0,255,100,0.45);
+    text-align: center;
+    margin-top: 7px;
+    min-height: 1em;
+  }
+
   .status-bar {
     margin-top: 16px;
     font-size: 0.65em;
     letter-spacing: 2px;
     color: rgba(0,255,204,0.3);
     text-align: center;
+    width: 100%;
   }
 
   .dot {
@@ -137,7 +219,6 @@ const char webpage[] PROGMEM = R"rawliteral(
     animation: pulse 1.5s infinite;
   }
 
-  /* dot turns red when WS is disconnected */
   .dot.disconnected {
     background: #ff3333;
     box-shadow: 0 0 6px #ff3333;
@@ -165,43 +246,81 @@ const char webpage[] PROGMEM = R"rawliteral(
 
     <div class="control-card">
       <div class="control-header">
-        <span class="control-name">BASE ROTATION (STEPPER)</span>
-        <span class="control-value" id="val0">0&deg;</span>
+        <span class="control-name">BASE ROTATION</span>
+        <span class="control-value" id="val0">90&deg;</span>
       </div>
-      <input type="range" min="-180" max="180" value="0" oninput="updateJoint(0, this.value)">
+      <input type="range" min="0" max="180" value="90" oninput="updateJoint(0, this.value)">
     </div>
 
     <div class="control-card">
       <div class="control-header">
         <span class="control-name">TILT 1 (LOWER)</span>
-        <span class="control-value" id="val1">0&deg;</span>
+        <span class="control-value" id="val1">90&deg;</span>
       </div>
-      <input type="range" min="-90" max="90" value="0" oninput="updateJoint(1, this.value)">
+      <input type="range" min="0" max="180" value="90" oninput="updateJoint(1, this.value)">
     </div>
 
     <div class="control-card">
       <div class="control-header">
-        <span class="control-name">TILT 2 (UPPER)</span>
-        <span class="control-value" id="val2">0&deg;</span>
+        <span class="control-name">TILT 2 (MIDDLE)</span>
+        <span class="control-value" id="val2">90&deg;</span>
       </div>
-      <input type="range" min="-90" max="90" value="0" oninput="updateJoint(2, this.value)">
+      <input type="range" min="0" max="180" value="90" oninput="updateJoint(2, this.value)">
+    </div>
+
+    <div class="control-card">
+      <div class="control-header">
+        <span class="control-name">TILT 3 (UPPER)</span>
+        <span class="control-value" id="val3">90&deg;</span>
+      </div>
+      <input type="range" min="0" max="180" value="90" oninput="updateJoint(3, this.value)">
     </div>
 
     <div class="control-card">
       <div class="control-header">
         <span class="control-name">GRIPPER TWIST</span>
-        <span class="control-value" id="val3">0&deg;</span>
+        <span class="control-value" id="val4">90&deg;</span>
       </div>
-      <input type="range" min="-90" max="90" value="0" oninput="updateJoint(3, this.value)">
+      <input type="range" min="0" max="180" value="90" oninput="updateJoint(4, this.value)">
     </div>
 
     <div class="control-card">
       <div class="control-header">
-        <span class="control-name">GRIPPER OPEN / CLOSE</span>
-        <span class="control-value" id="val4">0 mm</span>
+        <span class="control-name">GRIPPER OPEN/CLOSE</span>
+        <span class="control-value" id="val5">0 mm</span>
       </div>
-      <input type="range" min="0" max="62" value="0" oninput="updateJoint(4, this.value)">
+      <input type="range" min="0" max="62" value="0" oninput="updateJoint(5, this.value)">
     </div>
+
+    <!-- ═══ LOWER ARM (IK) CARD ═══ -->
+    <div class="control-card ik-card">
+      <div class="control-header">
+        <span class="control-name">&#8681; AUTO LOWER ARM</span>
+        <span style="font-size:0.6em;letter-spacing:1px;color:rgba(0,255,100,0.5)">IK</span>
+      </div>
+
+      <!-- Reach slider -->
+      <div class="ik-row">
+        <span class="ik-label">REACH</span>
+        <input type="range" id="ikReach" min="100" max="178" value="150"
+          oninput="document.getElementById('ikReachVal').innerText=this.value+' mm'">
+        <span class="ik-val" id="ikReachVal">150 mm</span>
+      </div>
+
+      <!-- Height slider -->
+      <div class="ik-row">
+        <span class="ik-label">HEIGHT</span>
+        <input type="range" id="ikHeight" min="0" max="100" value="0"
+          oninput="document.getElementById('ikHeightVal').innerText=this.value+' mm'">
+        <span class="ik-val" id="ikHeightVal">0 mm</span>
+      </div>
+
+      <button class="lower-btn" id="lowerBtn" onclick="triggerLowerArm()">
+        &#8681;&nbsp; LOWER ARM
+      </button>
+      <div class="ik-status" id="ikStatus"></div>
+    </div>
+    <!-- ═════════════════════════════ -->
 
   </div>
 </div>
@@ -229,7 +348,7 @@ renderer.setPixelRatio(window.devicePixelRatio);
 
 const scene  = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(45, 420/500, 0.1, 1000);
-camera.position.set(0, 25, 60);
+camera.position.set(0, 30, 70);
 camera.lookAt(0, 15, 0);
 
 const ambient = new THREE.AmbientLight(0x003322, 2);
@@ -260,12 +379,6 @@ function makeBox(w, h, d, mat) {
   return mesh;
 }
 
-function makeCyl(rt, rb, h, mat) {
-  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, 16), mat);
-  addWireframe(mesh, 0x00ffcc);
-  return mesh;
-}
-
 // ─── BUILD ARM ─────────────────────────────────────────────────────────────
 const rootPivot = new THREE.Group();
 scene.add(rootPivot);
@@ -290,21 +403,29 @@ const tilt2Pivot = new THREE.Group();
 tilt2Pivot.position.y = 10;
 tilt1Pivot.add(tilt2Pivot);
 
-const tiltshaft1 = makeBox(2, 8, 2, matTeal);
-tiltshaft1.position.set(4, 3.5, 0);
+const tiltshaft1 = makeBox(2, 6, 2, matTeal);
+tiltshaft1.position.set(4, 3, 0);
 tilt2Pivot.add(tiltshaft1);
 
-const tiltshaft2 = makeBox(2, 8, 2, matTeal);
-tiltshaft2.position.set(-4, 3.5, 0);
+const tiltshaft2 = makeBox(2, 6, 2, matTeal);
+tiltshaft2.position.set(-4, 3, 0);
 tilt2Pivot.add(tiltshaft2);
 
-const Gripperroation = makeBox(6, 5, 6, matTeal);
-Gripperroation.position.set(0, 8, 0);
-tilt2Pivot.add(Gripperroation);
+const middleArm = makeBox(6, 5, 6, matTeal);
+middleArm.position.set(0, 6, 0);
+tilt2Pivot.add(middleArm);
+
+const tilt3Pivot = new THREE.Group();
+tilt3Pivot.position.y = 8;
+tilt2Pivot.add(tilt3Pivot);
+
+const tilt3shaft = makeBox(4, 4, 4, matBase);
+tilt3shaft.position.set(0, 2, 0);
+tilt3Pivot.add(tilt3shaft);
 
 const gripperPivot = new THREE.Group();
-gripperPivot.position.y = 10.5;
-tilt2Pivot.add(gripperPivot);
+gripperPivot.position.y = 4;
+tilt3Pivot.add(gripperPivot);
 
 const twistBody = makeBox(6, 4, 6, matTeal);
 twistBody.position.y = 2;
@@ -387,63 +508,166 @@ window.addEventListener('touchmove', e => {
 // ─── VISUALS ───────────────────────────────────────────────────────────────
 function updateVisuals(joint, value) {
   value = parseInt(value);
-  const deg = value * Math.PI / 180;
   const sliders = document.querySelectorAll('input[type=range]');
 
-  if      (joint === 0) { document.getElementById("val0").innerText = value + "°"; rootPivot.rotation.y   = deg; sliders[0].value = value; }
-  else if (joint === 1) { document.getElementById("val1").innerText = value + "°"; tilt1Pivot.rotation.x  = deg; sliders[1].value = value; }
-  else if (joint === 2) { document.getElementById("val2").innerText = value + "°"; tilt2Pivot.rotation.x  = deg; sliders[2].value = value; }
-  else if (joint === 3) { document.getElementById("val3").innerText = value + "°"; gripperPivot.rotation.y = deg; sliders[3].value = value; }
-  else if (joint === 4) {
-    document.getElementById("val4").innerText = value + " mm";
+  if      (joint === 0) { document.getElementById("val0").innerText = value + "\xB0"; rootPivot.rotation.y    = (value-90)*Math.PI/180; sliders[0].value = value; }
+  else if (joint === 1) { document.getElementById("val1").innerText = value + "\xB0"; tilt1Pivot.rotation.x   = (value-90)*Math.PI/180; sliders[1].value = value; }
+  else if (joint === 2) { document.getElementById("val2").innerText = value + "\xB0"; tilt2Pivot.rotation.x   = (value-90)*Math.PI/180; sliders[2].value = value; }
+  else if (joint === 3) { document.getElementById("val3").innerText = value + "\xB0"; tilt3Pivot.rotation.x   = (value-90)*Math.PI/180; sliders[3].value = value; }
+  else if (joint === 4) { document.getElementById("val4").innerText = value + "\xB0"; gripperPivot.rotation.y = (value-90)*Math.PI/180; sliders[4].value = value; }
+  else if (joint === 5) {
+    document.getElementById("val5").innerText = value + " mm";
     gripperLeft.position.x  = -(0.8 + value / 26.96);
     gripperRight.position.x =  (0.8 + value / 26.96);
-    sliders[4].value = value;
+    sliders[5].value = value;
+  }
+}
+
+// ─── INVERSE KINEMATICS ────────────────────────────────────────────────────
+// Physical constants — MUST match the values in Robot_main.cpp
+const IK = {
+  L1: 80, L2: 100, L3: 200, BASE_H: 130,
+  MIN_R:  100,            // minimum reach (mm)
+  // Calibration (mirrors firmware constants):
+  T1_OFFSET: 90, T1_SIGN:  1,
+  T2_OFFSET: 90, T2_SIGN:  1,
+  T3_OFFSET: 90, T3_SIGN:  1
+};
+
+// Returns {t1, t2, t3} servo values (0-180) or null if unreachable.
+function solveIK(reach_mm, tip_height_mm) {
+  reach_mm = Math.max(reach_mm, IK.MIN_R);
+
+  // Wrist pivot target (wrist pointing straight down)
+  let Rw = reach_mm;
+  let Hw = (tip_height_mm - IK.BASE_H) + IK.L3;   // e.g. tip at 0mm → Hw = 70
+
+  let d2 = Rw*Rw + Hw*Hw;
+  let d  = Math.sqrt(d2);
+
+  const maxR = IK.L1 + IK.L2 - 1;
+  const minR = Math.abs(IK.L1 - IK.L2) + 1;
+
+  if (d < minR) return null;            // target too close (shouldn't happen with reach≥100)
+
+  if (d > maxR) {                       // clamp to max reach
+    const s = maxR / d;
+    Rw *= s;  Hw *= s;
+    d2 = Rw*Rw + Hw*Hw;
+    d  = Math.sqrt(d2);
+  }
+
+  // Law of cosines
+  let cosA2 = (IK.L1**2 + IK.L2**2 - d2) / (2 * IK.L1 * IK.L2);
+  cosA2 = Math.max(-1, Math.min(1, cosA2));
+  const A2 = Math.acos(cosA2);                 // bend angle at tilt2
+
+  const alpha = Math.atan2(Hw, Rw);            // elevation of wrist target from tilt1
+  let cosB = (IK.L1**2 + d2 - IK.L2**2) / (2 * IK.L1 * d);
+  cosB = Math.max(-1, Math.min(1, cosB));
+  const beta = Math.acos(cosB);
+
+  const theta1     = alpha + beta;             // lower arm angle from horizontal (elbow-up)
+  const thetaUp    = theta1 - Math.PI + A2;    // upper arm angle from horizontal
+  const theta3corr = -Math.PI/2 - thetaUp;     // tilt3 correction to keep wrist down
+
+  const t1_deg = theta1     * 180 / Math.PI;
+  const A2_deg = A2         * 180 / Math.PI;
+  const t3_deg = theta3corr * 180 / Math.PI;
+
+  return {
+    t1: Math.round(Math.max(0, Math.min(180, IK.T1_OFFSET + IK.T1_SIGN * (t1_deg - 90)))),
+    t2: Math.round(Math.max(0, Math.min(180, IK.T2_OFFSET + IK.T2_SIGN * A2_deg))),
+    t3: Math.round(Math.max(0, Math.min(180, IK.T3_OFFSET + IK.T3_SIGN * t3_deg)))
+  };
+}
+
+// Smoothly animate a joint to a target servo value over `duration` ms
+function animateJoint(joint, targetVal, duration) {
+  const sliders  = document.querySelectorAll('input[type=range]');
+  const startVal = parseInt(sliders[joint].value);
+  const t0       = performance.now();
+
+  function step(now) {
+    const frac = Math.min(1, (now - t0) / duration);
+    // ease-in-out quad
+    const ease = frac < 0.5 ? 2*frac*frac : 1 - Math.pow(-2*frac+2, 2)/2;
+    updateVisuals(joint, Math.round(startVal + (targetVal - startVal) * ease));
+    if (frac < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+// Called by the LOWER ARM button
+function triggerLowerArm() {
+  const reach  = parseInt(document.getElementById('ikReach').value);
+  const height = parseInt(document.getElementById('ikHeight').value);
+  const ik     = solveIK(reach, height);
+
+  const btn    = document.getElementById('lowerBtn');
+  const status = document.getElementById('ikStatus');
+
+  if (!ik) {
+    status.style.color = '#ff5555';
+    status.innerText = 'UNREACHABLE — try less reach or more height';
+    return;
+  }
+
+  status.style.color = 'rgba(0,255,100,0.6)';
+  status.innerText = `\u2192 T1:${ik.t1}\xB0  T2:${ik.t2}\xB0  T3:${ik.t3}\xB0`;
+
+  // Animate 3D preview
+  const DURATION = 900; // ms
+  animateJoint(1, ik.t1, DURATION);
+  animateJoint(2, ik.t2, DURATION);
+  animateJoint(3, ik.t3, DURATION);
+
+  // Visual feedback on button
+  btn.classList.add('running');
+  btn.innerText = '\u23F3  MOVING\u2026';
+  setTimeout(() => {
+    btn.classList.remove('running');
+    btn.innerHTML = '\u2713&nbsp; DONE';
+    setTimeout(() => { btn.innerHTML = '\u2681&nbsp; LOWER ARM'; }, 1200);
+  }, DURATION + 200);
+
+  // Send to firmware via WebSocket
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ cmd: 'lower_arm', reach, height }));
   }
 }
 
 // ─── WEBSOCKET ─────────────────────────────────────────────────────────────
-// One persistent connection replaces all fetch() calls and the polling interval.
-// - Sending: slider moves → ws.send(JSON)
-// - Receiving: ESP32 pushes position updates → updateVisuals()
-
 let ws;
 const statusDot  = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
 
 function connectWS() {
-  // Use the same host the page was served from so it works on both AP and home wifi
   ws = new WebSocket('ws://' + location.hostname + '/ws');
 
   ws.onopen = () => {
     statusDot.classList.remove('disconnected');
-    statusText.textContent = 'CONNECTED — ESP32 ROBOT ARM';
-    console.log('WebSocket connected');
+    statusText.textContent = 'CONNECTED \u2014 ESP32 ROBOT ARM';
   };
 
   ws.onclose = () => {
     statusDot.classList.add('disconnected');
-    statusText.textContent = 'DISCONNECTED — retrying...';
-    console.log('WebSocket closed, reconnecting in 2s');
-    // Auto-reconnect after 2 seconds
+    statusText.textContent = 'DISCONNECTED \u2014 retrying...';
     setTimeout(connectWS, 2000);
   };
 
-  ws.onerror = (e) => {
-    console.error('WebSocket error', e);
-    ws.close(); // triggers onclose → reconnect
-  };
+  ws.onerror = () => ws.close();
 
   ws.onmessage = (event) => {
-    // ESP32 pushes: {"type":"positions","base":0,"tilt1":0,"tilt2":0,"twist":0,"gripper":0}
     try {
       const data = JSON.parse(event.data);
       if (data.type === 'positions') {
         if (data.base    !== undefined) updateVisuals(0, data.base);
         if (data.tilt1   !== undefined) updateVisuals(1, data.tilt1);
         if (data.tilt2   !== undefined) updateVisuals(2, data.tilt2);
-        if (data.twist   !== undefined) updateVisuals(3, data.twist);
-        if (data.gripper !== undefined) updateVisuals(4, data.gripper);
+        if (data.tilt3   !== undefined) updateVisuals(3, data.tilt3);
+        if (data.twist   !== undefined) updateVisuals(4, data.twist);
+        if (data.gripper !== undefined) updateVisuals(5, data.gripper);
       }
     } catch(e) {
       console.warn('Bad message from ESP32:', event.data);
@@ -453,12 +677,8 @@ function connectWS() {
 
 connectWS();
 
-// ─── SEND COMMAND ──────────────────────────────────────────────────────────
-// Called by slider oninput — updates visuals locally for instant feedback,
-// then sends the command over WebSocket
 function updateJoint(joint, value) {
-  updateVisuals(joint, value); // instant local feedback, no waiting for round-trip
-
+  updateVisuals(joint, value);
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ joint: joint, value: parseInt(value) }));
   }
