@@ -103,7 +103,6 @@ constexpr uint8_t TOF_B_XSHUT = 17;
 constexpr uint8_t TOF_B_INT   = 5;
 
 constexpr uint8_t TOF_MEASURE_MS = 50;
-constexpr uint8_t PRINT_INTERVAL = 100;
 
 VL53L1X sensorA;
 VL53L1X sensorB;
@@ -112,12 +111,23 @@ volatile bool sensorA_DataReady = false;
 volatile bool sensorB_DataReady = false;
 uint16_t distA = 0;
 uint16_t distB = 0;
+
+// ── Circular buffer averaging ────────────────────────────────────────────────
+// At 50 ms per measurement we alternate A/B, so each sensor produces a new
+// reading roughly every 100 ms.  A window of 10 therefore covers ~1 second
+// of history, giving a smooth average while still reacting within a second.
+constexpr uint8_t AVG_WINDOW = 10;
+
+uint16_t bufA[AVG_WINDOW] = {};   // ring buffer for sensor A
+uint16_t bufB[AVG_WINDOW] = {};   // ring buffer for sensor B
+uint8_t  idxA    = 0;             // next write position
+uint8_t  idxB    = 0;
+uint8_t  countA  = 0;             // how many slots are filled (0..AVG_WINDOW)
+uint8_t  countB  = 0;
+// ─────────────────────────────────────────────────────────────────────────────
+
 unsigned long lastPrintTime   = 0;
 unsigned long previousaverage = 0;
-
-uint32_t tempA   = 0;
-uint32_t tempB   = 0;
-uint8_t  counter = 0;
 
 enum TofState { READ_A, READ_B };
 TofState tofState     = READ_A;
@@ -127,6 +137,7 @@ void IRAM_ATTR onSensorA_Ready() { sensorA_DataReady = true; }
 void IRAM_ATTR onSensorB_Ready() { sensorB_DataReady = true; }
 
 void readingTOF() {
+  // ── State-machine: switch which sensor is running ─────────────────────────
   if (tofState != prevTofState) {
     prevTofState = tofState;
     if (tofState == READ_A) {
@@ -138,48 +149,62 @@ void readingTOF() {
     }
   }
 
+  // ── Collect readings directly into circular buffers ───────────────────────
   switch (tofState) {
     case READ_A:
       if (sensorA_DataReady) {
         sensorA_DataReady = false;
         distA = sensorA.read(false);
-        if (sensorA.timeoutOccurred()) Serial.println("[TOF ERROR] Sensor A timeout");
+        if (sensorA.timeoutOccurred()) {
+          Serial.println("[TOF ERROR] Sensor A timeout");
+        } else if (distA < 8190) {          // ignore out-of-range / error codes
+          bufA[idxA] = distA;
+          idxA = (idxA + 1) % AVG_WINDOW;  // advance write pointer (wraps)
+          if (countA < AVG_WINDOW) countA++;
+        }
         tofState = READ_B;
       }
       break;
+
     case READ_B:
       if (sensorB_DataReady) {
         sensorB_DataReady = false;
         distB = sensorB.read(false);
-        if (sensorB.timeoutOccurred()) Serial.println("[TOF ERROR] Sensor B timeout");
+        if (sensorB.timeoutOccurred()) {
+          Serial.println("[TOF ERROR] Sensor B timeout");
+        } else if (distB < 8190) {
+          bufB[idxB] = distB;
+          idxB = (idxB + 1) % AVG_WINDOW;
+          if (countB < AVG_WINDOW) countB++;
+        }
         tofState = READ_A;
       }
       break;
   }
 
-  unsigned long now = millis();
-  if (now - lastPrintTime >= PRINT_INTERVAL) {
-    lastPrintTime = now;
-    if (distA < 8190) tempA += distA;
-    if (distB < 8190) tempB += distB;
-    counter++;
+  // ── Publish averages every 500 ms ─────────────────────────────────────────
+  if (millis() - previousaverage >= 500) {
+    previousaverage = millis();
 
-    if (millis() - previousaverage >= 500) {
-      previousaverage = millis();
-      if (counter > 0) {
-        sendData.DistanceA = (float)tempA / counter;
-        sendData.DistanceB = (float)tempB / counter;
-      }
-      tempA   = 0;
-      tempB   = 0;
-      counter = 0;
-
-      float os = 62.0f - sendData.DistanceA - sendData.DistanceB + 6.0f;
-      sendData.ObjectSize = (os <= 3.0f) ? 0.0f : os;
-
-      Serial.printf("[TOF] Avg A: %.1f | Avg B: %.1f | Calc Object: %.1f\n",
-                    sendData.DistanceA, sendData.DistanceB, sendData.ObjectSize);
+    if (countA > 0) {
+      uint32_t sumA = 0;
+      for (uint8_t i = 0; i < countA; i++) sumA += bufA[i];
+      sendData.DistanceA = (float)sumA / countA;
     }
+
+    if (countB > 0) {
+      uint32_t sumB = 0;
+      for (uint8_t i = 0; i < countB; i++) sumB += bufB[i];
+      sendData.DistanceB = (float)sumB / countB;
+    }
+
+    float os = 62.0f - sendData.DistanceA - sendData.DistanceB + 6.0f;
+    sendData.ObjectSize = (os <= 3.0f) ? 0.0f : os;
+
+    Serial.printf("[TOF] Avg A: %.1f (%d samples) | Avg B: %.1f (%d samples) | Object: %.1f mm\n",
+                  sendData.DistanceA, countA,
+                  sendData.DistanceB, countB,
+                  sendData.ObjectSize);
   }
 }
 
@@ -320,6 +345,7 @@ void handle_serial_input() {
     Serial.printf(" Current speed   : %.0f%%\n", currentSpeed);
     Serial.printf(" Avg temperature : %.1f C\n", sendData.Temperature_avg);
     Serial.printf(" Avg humidity    : %.1f%%\n", sendData.Humidity_avg);
+    Serial.printf(" ToF samples A/B : %d / %d\n", countA, countB);
     Serial.println("============================");
 
   } else {
@@ -352,7 +378,7 @@ void WiFi_host(uint8_t id) {
     Serial.println("[WIFI] Mode: home WiFi");
   } else if (id == 3) {
     WiFi.disconnect(true);
-    WiFi.mode(WIFI_AP_STA);  
+    WiFi.mode(WIFI_AP_STA);
     esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)wifi2_username, strlen(wifi2_username));
     esp_wifi_sta_wpa2_ent_set_username((uint8_t *)wifi2_username, strlen(wifi2_username));
     esp_wifi_sta_wpa2_ent_set_password((uint8_t *)wifi2_password, strlen(wifi2_password));
