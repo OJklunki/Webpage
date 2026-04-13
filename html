@@ -85,13 +85,6 @@ const char webpage[] PROGMEM = R"rawliteral(
 
   .control-card:hover { border-color: rgba(0,255,204,0.4); }
 
-  /* IK card gets a distinct accent colour */
-  .ik-card {
-    background: rgba(0,255,100,0.04);
-    border-color: rgba(0,255,100,0.25);
-  }
-  .ik-card:hover { border-color: rgba(0,255,100,0.55); }
-
   .control-header {
     display: flex;
     justify-content: space-between;
@@ -101,27 +94,6 @@ const char webpage[] PROGMEM = R"rawliteral(
 
   .control-name  { font-size: 0.65em; letter-spacing: 2px; color: #00ffcc; }
   .control-value { font-size: 0.85em; color: #00aaff; min-width: 45px; text-align: right; }
-
-  .ik-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 10px;
-  }
-
-  .ik-label {
-    font-size: 0.6em;
-    letter-spacing: 1px;
-    color: rgba(0,255,204,0.6);
-    min-width: 52px;
-  }
-
-  .ik-val {
-    font-size: 0.75em;
-    color: #00aaff;
-    min-width: 46px;
-    text-align: right;
-  }
 
   input[type=range] {
     -webkit-appearance: none;
@@ -148,56 +120,53 @@ const char webpage[] PROGMEM = R"rawliteral(
     border-radius: 2px;
   }
 
-  /* Green accent slider for IK controls */
-  .ik-card input[type=range]::-webkit-slider-thumb { background: #00ff77; box-shadow: 0 0 8px rgba(0,255,100,0.8); }
-  .ik-card input[type=range]::-webkit-slider-runnable-track {
-    background: linear-gradient(to right, rgba(0,255,100,0.5), rgba(0,200,120,0.3));
+  /* TELEMETRY & OVERRIDE STYLES */
+  .ps2-panel {
+    background: rgba(0, 100, 255, 0.05);
+    border: 1px solid rgba(0, 150, 255, 0.3);
   }
-
-  .lower-btn {
-    width: 100%;
-    margin-top: 4px;
-    padding: 10px 0;
-    background: rgba(0,255,100,0.08);
-    border: 1px solid rgba(0,255,100,0.5);
-    border-radius: 6px;
-    color: #00ff77;
-    font-family: 'Courier New', monospace;
-    font-size: 0.75em;
-    letter-spacing: 3px;
+  
+  .override-btn {
+    background: transparent;
+    border: 1px solid #ff3333;
+    color: #ff3333;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 0.7em;
     cursor: pointer;
-    transition: background 0.15s, box-shadow 0.15s;
+    text-transform: uppercase;
+    transition: all 0.2s;
+  }
+  .override-btn.active {
+    background: #00ffcc;
+    border-color: #00ffcc;
+    color: #000;
+    box-shadow: 0 0 10px rgba(0,255,204,0.8);
   }
 
-  .lower-btn:hover {
-    background: rgba(0,255,100,0.18);
-    box-shadow: 0 0 14px rgba(0,255,100,0.3);
+  .telemetry-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    font-size: 0.65em;
+    color: #00aaff;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed rgba(0,255,204,0.2);
   }
 
-  .lower-btn:active {
-    background: rgba(0,255,100,0.35);
+  .btn-indicator {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.05);
+    margin-right: 4px;
   }
-
-  .lower-btn.running {
-    color: #ffcc00;
-    border-color: rgba(255,200,0,0.5);
-    background: rgba(255,200,0,0.07);
-    animation: btn-pulse 0.6s infinite alternate;
-    pointer-events: none;
-  }
-
-  @keyframes btn-pulse {
-    from { box-shadow: 0 0 6px rgba(255,200,0,0.2); }
-    to   { box-shadow: 0 0 18px rgba(255,200,0,0.5); }
-  }
-
-  .ik-status {
-    font-size: 0.58em;
-    letter-spacing: 1px;
-    color: rgba(0,255,100,0.45);
-    text-align: center;
-    margin-top: 7px;
-    min-height: 1em;
+  .btn-indicator.on {
+    background: #00ffcc;
+    color: #000;
+    box-shadow: 0 0 5px #00ffcc;
   }
 
   .status-bar {
@@ -218,7 +187,6 @@ const char webpage[] PROGMEM = R"rawliteral(
     margin-right: 6px;
     animation: pulse 1.5s infinite;
   }
-
   .dot.disconnected {
     background: #ff3333;
     box-shadow: 0 0 6px #ff3333;
@@ -244,6 +212,25 @@ const char webpage[] PROGMEM = R"rawliteral(
 
   <div class="controls">
 
+    <div class="control-card ps2-panel">
+      <div class="control-header">
+        <span class="control-name">PS2 CONTROLLER</span>
+        <button id="overrideBtn" class="override-btn" onclick="toggleOverride()">Override: OFF</button>
+      </div>
+      <div class="telemetry-grid">
+        <div>Joy L: <span id="tele_lx">128</span>, <span id="tele_ly">128</span></div>
+        <div>Joy R: <span id="tele_rx">128</span>, <span id="tele_ry">128</span></div>
+        <div style="grid-column: span 2; margin-top: 4px;">
+          <span class="btn-indicator" id="btn_tri">&#9651;</span>
+          <span class="btn-indicator" id="btn_sq">&#9633;</span>
+          <span class="btn-indicator" id="btn_cir">&#9711;</span>
+          <span class="btn-indicator" id="btn_crs">&#10005;</span>
+          <span class="btn-indicator" id="btn_l1">L1</span>
+          <span class="btn-indicator" id="btn_r1">R1</span>
+        </div>
+      </div>
+    </div>
+
     <div class="control-card">
       <div class="control-header">
         <span class="control-name">BASE ROTATION</span>
@@ -255,25 +242,25 @@ const char webpage[] PROGMEM = R"rawliteral(
     <div class="control-card">
       <div class="control-header">
         <span class="control-name">TILT 1 (LOWER)</span>
-        <span class="control-value" id="val1">90&deg;</span>
+        <span class="control-value" id="val1">80&deg;</span>
       </div>
-      <input type="range" min="0" max="180" value="90" oninput="updateJoint(1, this.value)">
+      <input type="range" min="0" max="180" value="80" oninput="updateJoint(1, this.value)">
     </div>
 
     <div class="control-card">
       <div class="control-header">
         <span class="control-name">TILT 2 (MIDDLE)</span>
-        <span class="control-value" id="val2">90&deg;</span>
+        <span class="control-value" id="val2">80&deg;</span>
       </div>
-      <input type="range" min="0" max="180" value="90" oninput="updateJoint(2, this.value)">
+      <input type="range" min="0" max="180" value="80" oninput="updateJoint(2, this.value)">
     </div>
 
     <div class="control-card">
       <div class="control-header">
         <span class="control-name">TILT 3 (UPPER)</span>
-        <span class="control-value" id="val3">90&deg;</span>
+        <span class="control-value" id="val3">85&deg;</span>
       </div>
-      <input type="range" min="0" max="180" value="90" oninput="updateJoint(3, this.value)">
+      <input type="range" min="0" max="180" value="85" oninput="updateJoint(3, this.value)">
     </div>
 
     <div class="control-card">
@@ -291,36 +278,6 @@ const char webpage[] PROGMEM = R"rawliteral(
       </div>
       <input type="range" min="0" max="62" value="0" oninput="updateJoint(5, this.value)">
     </div>
-
-    <!-- ═══ LOWER ARM (IK) CARD ═══ -->
-    <div class="control-card ik-card">
-      <div class="control-header">
-        <span class="control-name">&#8681; AUTO LOWER ARM</span>
-        <span style="font-size:0.6em;letter-spacing:1px;color:rgba(0,255,100,0.5)">IK</span>
-      </div>
-
-      <!-- Reach slider -->
-      <div class="ik-row">
-        <span class="ik-label">REACH</span>
-        <input type="range" id="ikReach" min="100" max="178" value="150"
-          oninput="document.getElementById('ikReachVal').innerText=this.value+' mm'">
-        <span class="ik-val" id="ikReachVal">150 mm</span>
-      </div>
-
-      <!-- Height slider -->
-      <div class="ik-row">
-        <span class="ik-label">HEIGHT</span>
-        <input type="range" id="ikHeight" min="0" max="100" value="0"
-          oninput="document.getElementById('ikHeightVal').innerText=this.value+' mm'">
-        <span class="ik-val" id="ikHeightVal">0 mm</span>
-      </div>
-
-      <button class="lower-btn" id="lowerBtn" onclick="triggerLowerArm()">
-        &#8681;&nbsp; LOWER ARM
-      </button>
-      <div class="ik-status" id="ikStatus"></div>
-    </div>
-    <!-- ═════════════════════════════ -->
 
   </div>
 </div>
@@ -458,6 +415,11 @@ gripperRight.add(rightFinger);
   g.add(line);
 });
 
+// Set 3D model to new defaults manually
+tilt1Pivot.rotation.x = (80-90)*Math.PI/180;
+tilt2Pivot.rotation.x = (80-90)*Math.PI/180;
+tilt3Pivot.rotation.x = (85-90)*Math.PI/180;
+
 // ─── ORBIT ─────────────────────────────────────────────────────────────────
 let isDragging = false;
 let prevMouse  = { x: 0, y: 0 };
@@ -523,124 +485,11 @@ function updateVisuals(joint, value) {
   }
 }
 
-// ─── INVERSE KINEMATICS ────────────────────────────────────────────────────
-// Physical constants — MUST match the values in Robot_main.cpp
-const IK = {
-  L1: 80, L2: 100, L3: 200, BASE_H: 130,
-  MIN_R:  100,            // minimum reach (mm)
-  // Calibration (mirrors firmware constants):
-  T1_OFFSET: 90, T1_SIGN:  1,
-  T2_OFFSET: 90, T2_SIGN:  1,
-  T3_OFFSET: 90, T3_SIGN:  1
-};
-
-// Returns {t1, t2, t3} servo values (0-180) or null if unreachable.
-function solveIK(reach_mm, tip_height_mm) {
-  reach_mm = Math.max(reach_mm, IK.MIN_R);
-
-  // Wrist pivot target (wrist pointing straight down)
-  let Rw = reach_mm;
-  let Hw = (tip_height_mm - IK.BASE_H) + IK.L3;   // e.g. tip at 0mm → Hw = 70
-
-  let d2 = Rw*Rw + Hw*Hw;
-  let d  = Math.sqrt(d2);
-
-  const maxR = IK.L1 + IK.L2 - 1;
-  const minR = Math.abs(IK.L1 - IK.L2) + 1;
-
-  if (d < minR) return null;            // target too close (shouldn't happen with reach≥100)
-
-  if (d > maxR) {                       // clamp to max reach
-    const s = maxR / d;
-    Rw *= s;  Hw *= s;
-    d2 = Rw*Rw + Hw*Hw;
-    d  = Math.sqrt(d2);
-  }
-
-  // Law of cosines
-  let cosA2 = (IK.L1**2 + IK.L2**2 - d2) / (2 * IK.L1 * IK.L2);
-  cosA2 = Math.max(-1, Math.min(1, cosA2));
-  const A2 = Math.acos(cosA2);                 // bend angle at tilt2
-
-  const alpha = Math.atan2(Hw, Rw);            // elevation of wrist target from tilt1
-  let cosB = (IK.L1**2 + d2 - IK.L2**2) / (2 * IK.L1 * d);
-  cosB = Math.max(-1, Math.min(1, cosB));
-  const beta = Math.acos(cosB);
-
-  const theta1     = alpha + beta;             // lower arm angle from horizontal (elbow-up)
-  const thetaUp    = theta1 - Math.PI + A2;    // upper arm angle from horizontal
-  const theta3corr = -Math.PI/2 - thetaUp;     // tilt3 correction to keep wrist down
-
-  const t1_deg = theta1     * 180 / Math.PI;
-  const A2_deg = A2         * 180 / Math.PI;
-  const t3_deg = theta3corr * 180 / Math.PI;
-
-  return {
-    t1: Math.round(Math.max(0, Math.min(180, IK.T1_OFFSET + IK.T1_SIGN * (t1_deg - 90)))),
-    t2: Math.round(Math.max(0, Math.min(180, IK.T2_OFFSET + IK.T2_SIGN * A2_deg))),
-    t3: Math.round(Math.max(0, Math.min(180, IK.T3_OFFSET + IK.T3_SIGN * t3_deg)))
-  };
-}
-
-// Smoothly animate a joint to a target servo value over `duration` ms
-function animateJoint(joint, targetVal, duration) {
-  const sliders  = document.querySelectorAll('input[type=range]');
-  const startVal = parseInt(sliders[joint].value);
-  const t0       = performance.now();
-
-  function step(now) {
-    const frac = Math.min(1, (now - t0) / duration);
-    // ease-in-out quad
-    const ease = frac < 0.5 ? 2*frac*frac : 1 - Math.pow(-2*frac+2, 2)/2;
-    updateVisuals(joint, Math.round(startVal + (targetVal - startVal) * ease));
-    if (frac < 1) requestAnimationFrame(step);
-  }
-  requestAnimationFrame(step);
-}
-
-// Called by the LOWER ARM button
-function triggerLowerArm() {
-  const reach  = parseInt(document.getElementById('ikReach').value);
-  const height = parseInt(document.getElementById('ikHeight').value);
-  const ik     = solveIK(reach, height);
-
-  const btn    = document.getElementById('lowerBtn');
-  const status = document.getElementById('ikStatus');
-
-  if (!ik) {
-    status.style.color = '#ff5555';
-    status.innerText = 'UNREACHABLE — try less reach or more height';
-    return;
-  }
-
-  status.style.color = 'rgba(0,255,100,0.6)';
-  status.innerText = `\u2192 T1:${ik.t1}\xB0  T2:${ik.t2}\xB0  T3:${ik.t3}\xB0`;
-
-  // Animate 3D preview
-  const DURATION = 900; // ms
-  animateJoint(1, ik.t1, DURATION);
-  animateJoint(2, ik.t2, DURATION);
-  animateJoint(3, ik.t3, DURATION);
-
-  // Visual feedback on button
-  btn.classList.add('running');
-  btn.innerText = '\u23F3  MOVING\u2026';
-  setTimeout(() => {
-    btn.classList.remove('running');
-    btn.innerHTML = '\u2713&nbsp; DONE';
-    setTimeout(() => { btn.innerHTML = '\u2681&nbsp; LOWER ARM'; }, 1200);
-  }, DURATION + 200);
-
-  // Send to firmware via WebSocket
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ cmd: 'lower_arm', reach, height }));
-  }
-}
-
 // ─── WEBSOCKET ─────────────────────────────────────────────────────────────
 let ws;
 const statusDot  = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
+let currentOverride = false;
 
 function connectWS() {
   ws = new WebSocket('ws://' + location.hostname + '/ws');
@@ -662,12 +511,41 @@ function connectWS() {
     try {
       const data = JSON.parse(event.data);
       if (data.type === 'positions') {
+        // Update Arm
         if (data.base    !== undefined) updateVisuals(0, data.base);
         if (data.tilt1   !== undefined) updateVisuals(1, data.tilt1);
         if (data.tilt2   !== undefined) updateVisuals(2, data.tilt2);
         if (data.tilt3   !== undefined) updateVisuals(3, data.tilt3);
         if (data.twist   !== undefined) updateVisuals(4, data.twist);
         if (data.gripper !== undefined) updateVisuals(5, data.gripper);
+
+        // Update Controller Telemetry
+        if (data.ps2_lx !== undefined) {
+          document.getElementById('tele_lx').innerText = data.ps2_lx;
+          document.getElementById('tele_ly').innerText = data.ps2_ly;
+          document.getElementById('tele_rx').innerText = data.ps2_rx;
+          document.getElementById('tele_ry').innerText = data.ps2_ry;
+          
+          document.getElementById('btn_tri').className = 'btn-indicator ' + (data.ps2_tri ? 'on' : '');
+          document.getElementById('btn_sq').className  = 'btn-indicator ' + (data.ps2_sq ? 'on' : '');
+          document.getElementById('btn_cir').className = 'btn-indicator ' + (data.ps2_cir ? 'on' : '');
+          document.getElementById('btn_crs').className = 'btn-indicator ' + (data.ps2_crs ? 'on' : '');
+          document.getElementById('btn_l1').className  = 'btn-indicator ' + (data.ps2_l1 ? 'on' : '');
+          document.getElementById('btn_r1').className  = 'btn-indicator ' + (data.ps2_r1 ? 'on' : '');
+        }
+
+        // Update Override Button State
+        if (data.override !== undefined) {
+          currentOverride = data.override;
+          const btn = document.getElementById('overrideBtn');
+          if (currentOverride) {
+            btn.className = 'override-btn active';
+            btn.innerText = 'OVERRIDE: ON';
+          } else {
+            btn.className = 'override-btn';
+            btn.innerText = 'OVERRIDE: OFF';
+          }
+        }
       }
     } catch(e) {
       console.warn('Bad message from ESP32:', event.data);
@@ -684,6 +562,12 @@ function updateJoint(joint, value) {
   }
 }
 
+function toggleOverride() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ override: !currentOverride }));
+  }
+}
+
 // ─── RENDER LOOP ───────────────────────────────────────────────────────────
 function animate() {
   requestAnimationFrame(animate);
@@ -695,4 +579,3 @@ animate();
 </body>
 </html>
 )rawliteral";
-
