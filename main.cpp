@@ -118,7 +118,7 @@ struct Arm_to_ToF {
   float fanspeed;
 };
 
-bool fanover_ride   = false;
+bool fanover_ride    = false;
 bool sensorDataValid = false;
 
 ToF_to_Arm sensorData;
@@ -126,26 +126,6 @@ Arm_to_ToF fanData;
 
 uint8_t tofAddress[] = { 0xD4, 0xE9, 0xF4, 0xFB, 0x19, 0x88 };
 esp_now_peer_info_t peerInfo;
-
-// ─── INVERSE KINEMATICS CONSTANTS ─────────────────────────────────────────
-//  L1  = 80  mm   tilt1-pivot → tilt2-pivot
-//  L2  = 100 mm   tilt2-pivot → tilt3-pivot
-//  L3  = 200 mm   tilt3-pivot → gripper tip
-//  BASE_H = 130 mm  tilt1-pivot height above floor
-static constexpr float IK_L1      = 80.0f;
-static constexpr float IK_L2      = 100.0f;
-static constexpr float IK_L3      = 200.0f;
-static constexpr float IK_BASE_H  = 130.0f;
-static constexpr float IK_MIN_R   = 100.0f;
-
-// Servo calibration — flip SIGN to -1 if the arm bends the wrong way.
-// Tweak OFFSET (±10°) if the arm is consistently off by a fixed amount.
-static constexpr float IK_T1_OFFSET = 90.0f;
-static constexpr float IK_T1_SIGN   =  1.0f;
-static constexpr float IK_T2_OFFSET = 90.0f;
-static constexpr float IK_T2_SIGN   =  1.0f;
-static constexpr float IK_T3_OFFSET = 90.0f;
-static constexpr float IK_T3_SIGN   =  1.0f;
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Forward declarations
@@ -257,7 +237,7 @@ void moveservos() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  PS2 COMMAND MAPPING
+//  PS2 COMMAND MAPPING (UPDATED FOR VELOCITY CONTROL)
 // ══════════════════════════════════════════════════════════════════════════════
 constexpr uint8_t JOY_DEADZONE = 15;
 constexpr uint8_t JOY_STEP     = 1;
@@ -273,20 +253,39 @@ void commands_for_p2c() {
   btnselect_prev = btnselect;
 
   if (selectpressed) {
+    // Left Stick X -> Base Rotation (Velocity Mode: Stops when released)
     if (abs((int)lx - 128) > JOY_DEADZONE)
       baseroatatiion = constrain(baseroatatiion + ((lx > 128) ? 1 : -1) * JOY_STEP, 0, 180);
+    
+    // Left Stick Y -> Tilt 1 (Velocity Mode: Stops when released)
     if (abs((int)ly - 128) > JOY_DEADZONE)
       tilt1 = constrain(tilt1 + ((ly > 128) ? 1 : -1) * JOY_STEP, 0, 180);
+    
+    // Right Stick Y -> Tilt 2 (Velocity Mode: Stops when released)
     if (abs((int)ry - 128) > JOY_DEADZONE)
       tilt2 = constrain(tilt2 + ((ry > 128) ? 1 : -1) * JOY_STEP, 0, 180);
+    
+    // Right Stick X -> Tilt 3 (Velocity Mode: Stops when released)
     if (abs((int)rx_joy - 128) > JOY_DEADZONE)
       tilt3 = constrain(tilt3 + ((rx_joy > 128) ? 1 : -1) * JOY_STEP, 0, 180);
 
+    // Gripper Controls
     if (l1) Rotationgripper = constrain(Rotationgripper - BTN_STEP, 0, 180);
     if (r1) Rotationgripper = constrain(Rotationgripper + BTN_STEP, 0, 180);
     if (l2) Gripperclosing  = constrain(Gripperclosing  - BTN_STEP, 0, 180);
     if (r2) Gripperclosing  = constrain(Gripperclosing  + BTN_STEP, 0, 180);
 
+    // HOME BUTTON (Triangle): Resets all joints to 90 degrees slowly
+    if (triangle) {
+      baseroatatiion  = 90;
+      tilt1           = 90;
+      tilt2           = 90;
+      tilt3           = 90;
+      Rotationgripper = 90;
+      Gripperclosing  = 90;
+    }
+
+    // PANIC RESET (Square): Snap back to default stance
     if (square) {
       baseroatatiion  = 90;
       tilt1           = 0;
@@ -338,85 +337,6 @@ void broadcastPositions() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  INVERSE KINEMATICS
-// ══════════════════════════════════════════════════════════════════════════════
-struct IKResult { bool valid; int t1, t2, t3; };
-
-// Solve 3-link planar IK.
-//   reach_mm      = horizontal distance from base centre to gripper tip (mm)
-//   tip_height_mm = desired height of gripper tip above floor (0 = floor level)
-// Keeps the wrist pointing straight down; uses elbow-up solution.
-IKResult solveIK(float reach_mm, float tip_height_mm) {
-  IKResult res = { false, 90, 90, 90 };
-
-  reach_mm = max(reach_mm, IK_MIN_R);
-
-  // Wrist-pivot target (wrist always points straight down, so subtract L3 vertically)
-  float Rw = reach_mm;
-  float Hw = (tip_height_mm - IK_BASE_H) + IK_L3;
-  // e.g. tip at floor (0 mm) → Hw = (0 - 130) + 200 = +70 mm above tilt1
-
-  float d2 = Rw*Rw + Hw*Hw;
-  float d  = sqrtf(d2);
-
-  const float maxReach = IK_L1 + IK_L2 - 1.0f;
-  const float minReach = fabsf(IK_L1 - IK_L2) + 1.0f;
-
-  if (d < minReach) { Serial.println("IK: target too close"); return res; }
-
-  if (d > maxReach) {           // clamp to boundary, keep direction
-    float s = maxReach / d;
-    Rw *= s; Hw *= s;
-    d2 = Rw*Rw + Hw*Hw;
-    d  = sqrtf(d2);
-  }
-
-  // Law of cosines — elbow-up solution
-  float cosA2 = (IK_L1*IK_L1 + IK_L2*IK_L2 - d2) / (2.0f * IK_L1 * IK_L2);
-  cosA2 = constrain(cosA2, -1.0f, 1.0f);
-  float A2_rad = acosf(cosA2);          // bend angle at tilt2
-
-  float alpha = atan2f(Hw, Rw);
-  float cosB  = (IK_L1*IK_L1 + d2 - IK_L2*IK_L2) / (2.0f * IK_L1 * d);
-  cosB = constrain(cosB, -1.0f, 1.0f);
-  float beta  = acosf(cosB);
-
-  float theta1_rad  = alpha + beta;                          // lower arm from horizontal
-  float thetaUp_rad = theta1_rad - ((float)M_PI - A2_rad);  // upper arm from horizontal
-  float theta3_rad  = -(float)M_PI / 2.0f - thetaUp_rad;   // wrist correction → point down
-
-  float t1_deg = theta1_rad * 180.0f / (float)M_PI;
-  float A2_deg = A2_rad     * 180.0f / (float)M_PI;
-  float t3_deg = theta3_rad * 180.0f / (float)M_PI;
-
-  // Map geometry angles to servo values
-  int s1 = (int)roundf(IK_T1_OFFSET + IK_T1_SIGN * (t1_deg - 90.0f));
-  int s2 = (int)roundf(IK_T2_OFFSET + IK_T2_SIGN * A2_deg);
-  int s3 = (int)roundf(IK_T3_OFFSET + IK_T3_SIGN * t3_deg);
-
-  res.t1    = constrain(s1, 0, 180);
-  res.t2    = constrain(s2, 0, 180);
-  res.t3    = constrain(s3, 0, 180);
-  res.valid = true;
-
-  Serial.printf("IK reach=%.0f h=%.0f → θ1=%.1f° bend=%.1f° θ3=%.1f°  servo: %d %d %d\n",
-                reach_mm, tip_height_mm, t1_deg, A2_deg, t3_deg, res.t1, res.t2, res.t3);
-  return res;
-}
-
-// Move the arm to a floor-level pick position using IK.
-//   reach_mm    = how far out (mm) — must be ≥ 100
-//   tip_h_mm    = gripper tip height above floor (0 = touching floor)
-void lowerArm(float reach_mm = 150.0f, float tip_h_mm = 0.0f) {
-  IKResult ik = solveIK(reach_mm, tip_h_mm);
-  if (!ik.valid) return;
-  applyCommand(1, ik.t1);
-  applyCommand(2, ik.t2);
-  applyCommand(3, ik.t3);
-  broadcastPositions();
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
 //  WEBSOCKET EVENT HANDLER
 // ══════════════════════════════════════════════════════════════════════════════
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
@@ -439,17 +359,6 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       if (err) {
         Serial.print("JSON parse error: "); Serial.println(err.c_str());
         return;
-      }
-
-      // ── IK lower_arm command ───────────────────────────────────────────
-      if (doc.containsKey("cmd")) {
-        const char *cmd_ws = doc["cmd"];
-        if (strcmp(cmd_ws, "lower_arm") == 0) {
-          float reach  = doc["reach"]  | 150.0f;
-          float height = doc["height"] | 0.0f;
-          lowerArm(reach, height);
-        }
-        return;   // no fallthrough — cmd messages are handled above
       }
 
       // ── Individual joint command ───────────────────────────────────────
@@ -561,19 +470,8 @@ void handleSerial() {
     return;
   }
 
-  // lower,<reach_mm>  OR  lower,<reach_mm>,<height_mm>
-  // e.g. "lower,150"   → tip at floor, 150 mm out
-  //      "lower,120,30" → tip 30 mm above floor, 120 mm out
-  if (cmd.equalsIgnoreCase("lower")) {
-    float reach  = (commaIndex > 0) ? serialData.substring(commaIndex + 1).toFloat() : 150.0f;
-    int   comma2 = serialData.indexOf(',', commaIndex + 1);
-    float height = (comma2   > 0)  ? serialData.substring(comma2 + 1).toFloat()      : 0.0f;
-    lowerArm(reach, height);
-    return;
-  }
-
   // <joint>,<value>  e.g. "1,45"
-  if (commaIndex <= 0) { Serial.println("Use: joint,value  or  lower,reach[,height]"); return; }
+  if (commaIndex <= 0) { Serial.println("Use: joint,value"); return; }
   applyCommand(cmd.toInt(), serialData.substring(commaIndex + 1).toInt());
   broadcastPositions();
 }
@@ -642,9 +540,6 @@ void init_esp_now() {
     Serial.println("Failed to add ToF peer");
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-//  SETUP & LOOP
-// ══════════════════════════════════════════════════════════════════════════════
 void setup() {
   Serial.begin(115200);
   Serial2.begin(9600, SERIAL_8N1, PS2_TX_PIN, -1);
@@ -669,7 +564,7 @@ void loop() {
   moveservos();
   p2c();
   commands_for_p2c();
-  // just_for_testing();
+  //just_for_testing();
   if (alarmbuzzer) alarm();
   send_fanspeed();
   broadcast_2_webpage();
